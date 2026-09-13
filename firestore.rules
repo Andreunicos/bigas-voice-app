@@ -1,0 +1,33 @@
+// Regras do Firestore do projeto "bigas-voice" (Firebase).
+// Cole isto em: Firebase Console › Firestore Database › Regras › Publicar.
+// É ISTO que protege os dados — a chave dentro do home.js não é segredo.
+//
+// usuarios/{uid}            nick, nickBusca, ultimoVisto, emChamada
+// usuarios/{uid}/amigos/…   lista de amigos (só o dono mexe)
+// convites/{id}             de, deNick, para, paraNick, link, estado, quando
+//                           estado: chamando → aceita | recusada | encerrada | semResposta
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /usuarios/{uid} {
+      // qualquer conta logada pode LER (é assim que se acha alguém pelo nick
+      // e se vê quem está online); só o dono escreve no próprio perfil
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+
+      match /amigos/{amigoId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    match /convites/{conviteId} {
+      // só crio convite em meu próprio nome
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.de;
+      // só quem chamou e quem foi chamado enxergam e mexem no convite
+      allow read, update: if request.auth != null &&
+        (request.auth.uid == resource.data.de || request.auth.uid == resource.data.para);
+    }
+  }
+}

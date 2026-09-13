@@ -1,41 +1,47 @@
 /* =====================================================================
  * BIGAS VOICE — o aplicativo (Discord 2.0)
  * ---------------------------------------------------------------------
- * Virou de verdade um app com identidade: a primeira tela é login
- * (nick+senha, conta no Firebase), depois uma casa com lista de amigos
- * — sem link, sem código, nunca mais. Chamar um amigo já leva você
- * direto pra dentro da call.
+ * A janela principal mostra SEMPRE a casa (home.html): login, depois a
+ * lista de amigos. Ela nunca navega pra outro lugar.
  *
- * A peça que faz isso funcionar sem reescrever o Bigas Voice: quem gera
- * o link de uma sala continua sendo o PRÓPRIO SITE, sempre — nunca
- * reimplementamos a criptografia dele aqui. Só que agora isso acontece
- * numa janela ESCONDIDA (`janelaFundo`), e o link resultante é usado pra
- * navegar a janela DE VERDADE (`janelaPrincipal`) pra dentro da call.
- * A pessoa nunca vê a sala sendo criada nem o link em si.
+ * Uma call é uma `WebContentsView` encaixada por cima do painel da casa
+ * (a área grande à direita da lista de amigos). Dentro dela roda o site
+ * de verdade do Bigas Voice — e o app veste esse site com CSS e um
+ * pouquinho de JS pra que nada de "link", "código", "criar sala" apareça:
+ * só a call em si. Quando a call acaba, a view é destruída e o painel
+ * volta a aparecer. A lista de amigos nunca sai da tela.
  *
- * `home.html` é a casa (login + amigos). `janelaPrincipal` mostra ELA
- * por padrão, e só troca pro site de verdade quando uma call começa —
- * seja porque você chamou alguém, seja porque aceitou um convite.
+ * Quem cria a sala continua sendo o PRÓPRIO site (clicando de verdade no
+ * botão dele, dentro da view) — nunca reimplementamos a criptografia
+ * aqui. E quem cria é a view VISÍVEL, então você é o dono da sala de
+ * verdade (pode tirar gente da call, por exemplo).
  * ================================================================== */
-const { app, BrowserWindow, session, desktopCapturer, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, session, desktopCapturer, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
 const SITE = 'https://andreunicos.github.io/';
 
 let janelaPrincipal = null;
-let janelaFundo = null; // escondida, só existe pra gerar links de sala
+let viewCall = null;          // a call em andamento (ou null)
+let nickAtual = '';           // nick da conta logada, pra assinar dentro do site
+let outroNick = '';           // nick de quem está do outro lado (só pra textos)
+let rectPainel = { x: 324, y: 0, width: 956, height: 820 }; // onde a call se encaixa (a casa avisa)
+let emTelaCheia = false;      // alguém pediu "tela cheia" num vídeo dentro da call
 
 function linkEhValido(url){
   try { return new URL(url).origin === new URL(SITE).origin; } catch { return false; }
 }
 
+/* ---------------------------------------------------------------------
+ * A JANELA
+ * ------------------------------------------------------------------ */
 function criarJanelaPrincipal(){
   janelaPrincipal = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 760,
-    minHeight: 560,
+    minWidth: 860,
+    minHeight: 600,
     title: 'Bigas Voice',
     backgroundColor: '#0c0d10',
     autoHideMenuBar: true,
@@ -43,197 +49,311 @@ function criarJanelaPrincipal(){
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js'),
     },
   });
 
+  // zoom na casa desalinharia a view da call (ela é posicionada em pixels
+  // CSS da casa) — então zoom desligado, e sem menu escondido com atalhos
+  janelaPrincipal.webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
+  janelaPrincipal.webContents.on('did-finish-load', () => {
+    janelaPrincipal.webContents.setZoomFactor(1);
+  });
+
   janelaPrincipal.loadFile('home.html');
 
-  // link "abrir em nova aba" ou pop-up deve abrir no navegador de
-  // verdade, não numa segunda janela do app
   janelaPrincipal.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  janelaPrincipal.webContents.on('did-finish-load', injetarBotoesDeCall);
+  janelaPrincipal.on('resize', posicionarView);
+  janelaPrincipal.on('closed', () => { janelaPrincipal = null; viewCall = null; });
 }
 
-function criarJanelaFundo(){
-  janelaFundo = new BrowserWindow({
-    show: false,
-    webPreferences: { contextIsolation: true, sandbox: true },
-  });
-  janelaFundo.loadURL(SITE).catch(() => {});
+function avisarHome(canal, dados){
+  if (janelaPrincipal && !janelaPrincipal.isDestroyed())
+    janelaPrincipal.webContents.send(canal, dados || {});
 }
 
 /* ---------------------------------------------------------------------
- * GERAR UMA SALA SEM MOSTRAR NADA DISSO PRA PESSOA
- * ---------------------------------------------------------------------
- * "Chamar" um amigo, por trás, ainda é clicar em "Criar sala e pegar o
- * link" — só que quem clica é a janela escondida, não a pessoa. Sempre
- * recarrega o site ali antes de gerar, pra nunca herdar sala de uma
- * chamada anterior; e recarrega de novo DEPOIS de entregar o link, pra
- * a janela escondida abandonar aquela sala assim que a de verdade
- * (janelaPrincipal) assume como participante real.
+ * A VIEW DA CALL
  * ------------------------------------------------------------------ */
-async function gerarLinkDeChamada(){
-  if (!janelaFundo || janelaFundo.isDestroyed()) return null;
-  try{
-    await janelaFundo.loadURL(SITE);
-    return await janelaFundo.webContents.executeJavaScript(`
-      (async function(){
-        var botao = document.getElementById('btn-sala');
-        if (!botao) return null;
-        botao.click();
-        for (var i = 0; i < 60; i++) {
-          await new Promise(function(r){ setTimeout(r, 300); });
-          var campo = document.getElementById('sala-link');
-          if (campo && campo.value) return campo.value;
-        }
-        return null;
-      })();
-    `);
-  }catch(e){
-    console.error('gerar link de chamada falhou', e);
-    return null;
+function posicionarView(){
+  if (!viewCall || !janelaPrincipal || janelaPrincipal.isDestroyed()) return;
+  if (emTelaCheia) {
+    const b = janelaPrincipal.getContentBounds();
+    viewCall.setBounds({ x: 0, y: 0, width: b.width, height: b.height });
+  } else {
+    viewCall.setBounds(rectPainel);
   }
 }
 
-function ligarChamadas(){
-  // "chamar": gera o link de verdade, JÁ leva a janela principal pra
-  // dentro da call, e devolve o link só pra guardar no convite
-  ipcMain.handle('call:iniciar', async () => {
-    const link = await gerarLinkDeChamada();
-    if (link) {
-      janelaPrincipal.loadURL(link);
-      janelaFundo.loadURL(SITE).catch(() => {}); // libera a janela escondida da sala que acabou de criar
-    }
-    return link;
+function criarViewCall(){
+  viewCall = new WebContentsView({
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false, // uma call não pode "dormir" quando a janela minimiza
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  viewCall.setBackgroundColor('#0c0d10');
+  janelaPrincipal.contentView.addChildView(viewCall);
+  posicionarView();
+
+  const wc = viewCall.webContents;
+  const estaView = viewCall;
+
+  wc.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  wc.on('will-navigate', (ev, url) => {
+    if (!linkEhValido(url)) { ev.preventDefault(); shell.openExternal(url); }
   });
 
-  // "aceitar um convite recebido": navega direto pro link que já veio pronto
-  ipcMain.on('call:entrar', (ev, link) => {
-    if (linkEhValido(link)) janelaPrincipal.loadURL(link);
+  // veste o site a cada carga (o site se recarrega sozinho quando sai
+  // versão nova dele — e volta pra mesma sala; a roupa tem que voltar junto)
+  wc.on('dom-ready', () => vestirSite(wc));
+
+  // "tela cheia" num vídeo: a view cobre a janela inteira e a janela vai
+  // pra tela cheia de verdade — igual maximizar a transmissão no Discord
+  wc.on('enter-html-full-screen', () => {
+    emTelaCheia = true;
+    janelaPrincipal.setFullScreen(true);
+    posicionarView();
+  });
+  wc.on('leave-html-full-screen', () => {
+    emTelaCheia = false;
+    janelaPrincipal.setFullScreen(false);
+    posicionarView();
   });
 
-  // "voltar pra casa": sai da call, volta pra tela de amigos
-  ipcMain.on('call:sair', () => janelaPrincipal.loadFile('home.html'));
+  wc.on('render-process-gone', () => { if (viewCall === estaView) encerrarCall('caiu'); });
+  wc.on('did-fail-load', (ev, codigo, desc, url, principal) => {
+    // -3 é "abortado" (a própria página trocou de endereço no meio) — não é falha
+    if (principal && codigo !== -3 && viewCall === estaView) encerrarCall('semInternet');
+  });
+
+  return viewCall;
+}
+
+async function encerrarCall(motivo){
+  if (!viewCall) return;
+  const v = viewCall;
+  viewCall = null;
+  if (emTelaCheia) {
+    emTelaCheia = false;
+    if (janelaPrincipal && !janelaPrincipal.isDestroyed()) janelaPrincipal.setFullScreen(false);
+  }
+  // avisa os outros da call antes de fechar ("tchau" — senão vira fantasma
+  // por alguns segundos na tela deles)
+  try{
+    await Promise.race([
+      v.webContents.executeJavaScript('try{ darAdeus(); }catch(e){} true'),
+      new Promise((r) => setTimeout(r, 400)),
+    ]);
+  }catch{}
+  try { if (janelaPrincipal && !janelaPrincipal.isDestroyed()) janelaPrincipal.contentView.removeChildView(v); } catch {}
+  try { v.webContents.close(); } catch {}
+  // "trocou" = já vem outra call no lugar; a casa mesma cuidou da anterior
+  if (motivo !== 'trocou') avisarHome('call:estado', { estado: 'encerrada', motivo: motivo || '' });
 }
 
 /* ---------------------------------------------------------------------
- * OS BOTÕES FLUTUANTES SÓ FAZEM SENTIDO DENTRO DE UMA CALL
+ * VESTIR O SITE: só a call aparece
  * ---------------------------------------------------------------------
- * A janela principal mostra a home (que já tem sua própria interface)
- * OU o site de verdade (dentro de uma call). Estes botões (voltar pra
- * casa, verificar atualização, versão) só existem na segunda situação —
- * a home não precisa deles, tem seu próprio jeito de fazer tudo isso.
+ * O site tem a tela de entrada dele (criar sala, link, WhatsApp, modo
+ * manual, "use fone"…). Dentro do app nada disso faz sentido — o app já
+ * resolveu quem chama quem. Então: esconde tudo do cartão de entrada,
+ * menos o texto de estado ("esperando…", "conectando…") e erros.
+ *
+ * Também: assina com o nick da conta; "botão direito" numa pessoa abre o
+ * menu dela (volume, silenciar) igual no Discord; e o botão de encerrar
+ * do site passa a devolver a pessoa pra casa, em vez de recarregar o site.
  * ------------------------------------------------------------------ */
-function injetarBotoesDeCall(){
-  const url = janelaPrincipal.webContents.getURL();
-  if (!url.startsWith(SITE)) return; // está na home — nada a injetar aqui
+function vestirSite(wc){
+  wc.insertCSS(`
+    #entrada{ background-image:none !important; padding:0 !important }
+    #entrada .cartao{
+      background:transparent !important; border:0 !important; box-shadow:none !important;
+      width:min(520px,100%) !important; text-align:center;
+    }
+    #entrada .cartao-topo, #entrada .campo-nome, #manual-bloco, #entrada .fone, #entrada .cartao-pe,
+    #sala-bloco > .ajuda, #btn-sala, #btn-teste, #sala-link, #sala-envio, #aviso-link, .voce-pronto{
+      display:none !important;
+    }
+    #sala-cx{ margin-top:0 !important; animation:none !important }
+    .sala{ padding:0 24px !important; animation:none !important }
+    .sala-estado{ justify-content:center; font-size:15px !important; color:#a2aab8 !important }
+    #erro{ margin:14px 24px 0 !important }
+    #btn-sala-denovo{ max-width:260px; margin:14px auto 0 !important }
+  `).catch(() => {});
 
-  janelaPrincipal.webContents.insertCSS(`
-    #bigas-versao{
-      position:fixed; right:10px; bottom:6px; z-index:999999;
-      font:500 11px system-ui,-apple-system,'Segoe UI',sans-serif;
-      color:#6d7583; pointer-events:none; user-select:none;
-    }
-    #bigas-botoes-app{
-      position:fixed; left:16px; bottom:16px; z-index:999999;
-      display:flex; gap:8px; font:600 12.5px/1 system-ui,-apple-system,'Segoe UI',sans-serif;
-    }
-    #bigas-botoes-app button{
-      border:0; border-radius:22px; padding:10px 18px; cursor:pointer;
-      font:inherit; color:#fff; box-shadow:0 8px 22px rgba(0,0,0,.45);
-      display:flex; align-items:center; gap:8px; position:relative; overflow:hidden;
-    }
-    #bigas-casa{ background:#171a21; border:1px solid #2a2f3a }
-    #bigas-casa:hover{ background:#1d212a; border-color:#0891b2 }
-    #bigas-atualizar{ background:#171a21; border:1px solid #2a2f3a; min-width:190px; justify-content:center }
-    #bigas-atualizar.achou{ border-color:#0891b2 }
-    #bigas-atualizar.pronto{ background:#3fd07a; border-color:#3fd07a; color:#0c0d10; font-weight:700 }
-    #bigas-atualizar.pronto:hover{ background:#59d98d }
-    #bigas-atualizar:disabled{ cursor:default; opacity:.85 }
-    #bigas-atualizar .barra{
-      position:absolute; inset:0; background:#0891b2; z-index:0;
-      transform-origin:left; transform:scaleX(0); transition:transform .25s linear;
-    }
-    #bigas-atualizar span{ position:relative; z-index:1; white-space:nowrap }
-    @keyframes bigas-gira{ to{ transform:rotate(360deg) } }
-    #bigas-atualizar .girando{
-      width:12px; height:12px; border:2px solid rgba(255,255,255,.35);
-      border-top-color:#fff; border-radius:50%; animation:bigas-gira .7s linear infinite;
-      position:relative; z-index:1; flex-shrink:0;
-    }
-  `);
-  janelaPrincipal.webContents.executeJavaScript(`
+  wc.executeJavaScript(`
     (function(){
-      if (!document.getElementById('bigas-versao')) {
-        var v = document.createElement('div');
-        v.id = 'bigas-versao';
-        v.textContent = 'aplicativo v${app.getVersion()}';
-        document.body.appendChild(v);
+      if (window.__bigasVestido) return;
+      window.__bigasVestido = true;
+
+      // assina com o nick da conta (o site guarda e manda pros outros)
+      var nick = ${JSON.stringify(nickAtual || '')};
+      var n = document.getElementById('meu-nome');
+      if (n && nick && n.value !== nick) {
+        n.value = nick;
+        n.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      if (document.getElementById('bigas-botoes-app')) return;
 
-      var caixa = document.createElement('div');
-      caixa.id = 'bigas-botoes-app';
+      // o site copia o link da sala pra área de transferência ao criar —
+      // dentro do app o link não é pra ninguém ver, nem colar sem querer
+      try { navigator.clipboard.writeText = function(){ return Promise.reject(new Error('desligado no app')); }; } catch(e){}
 
-      var bCasa = document.createElement('button');
-      bCasa.id = 'bigas-casa'; bCasa.type = 'button';
-      bCasa.textContent = '🏠 Amigos';
-      bCasa.onclick = function(){ window.bigasApp.voltarParaAmigos(); };
+      // os textos de estado do site falam em "link", "aba", "modo manual" —
+      // aqui dentro nada disso existe. Traduz na saída, sem mexer no site.
+      var outro = ${JSON.stringify(outroNick || '')} || 'seu amigo';
+      var dizerOriginal = window.dizerSala;
+      if (typeof dizerOriginal === 'function') {
+        window.dizerSala = function(t){
+          t = String(t == null ? '' : t)
+            .replace('esperando seu amigo abrir o link…', 'chamando ' + outro + '…')
+            .replace('ninguém aqui ainda — pode deixar esta aba aberta', 'ainda procurando ' + outro + '…')
+            .replace('procurando quem já está na call…', 'entrando na chamada de ' + outro + '…');
+          return dizerOriginal(t);
+        };
+      }
+      if (typeof window.caiuPraManual === 'function' && typeof window.erro === 'function') {
+        window.caiuPraManual = function(e){
+          console.warn('sala', e);
+          var m = String((e && e.message) || e || '');
+          window.erro(m === 'SEM_SINAL'
+            ? 'Não consegui falar com o servidor de sinal (a rede daqui pode estar bloqueando). Tenta de novo em alguns segundos.'
+            : 'Deu problema na chamada: ' + m + '. Tenta de novo.');
+        };
+      }
 
-      var bAt = document.createElement('button');
-      bAt.id = 'bigas-atualizar'; bAt.type = 'button';
-      var barra = document.createElement('div'); barra.className = 'barra';
-      var rotulo = document.createElement('span'); rotulo.textContent = '🔄 Verificar atualização';
-      bAt.append(barra, rotulo);
+      // encerrar = voltar pra casa (o app fecha a call; o site não recarrega)
+      document.addEventListener('click', function(ev){
+        var b = ev.target && ev.target.closest && ev.target.closest('#btn-sair');
+        if (!b) return;
+        ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+        window.bigasApp.sairDaCall();
+      }, true);
 
-      var voltarPraOcioso = null;
-      function estado(nome, extra){
-        clearTimeout(voltarPraOcioso);
-        bAt.className = '';
-        bAt.disabled = false;
-        barra.style.transform = 'scaleX(0)';
-        var girando = bAt.querySelector('.girando');
-        if (girando) girando.remove();
-
-        if (nome === 'ocioso') {
-          rotulo.textContent = '🔄 Verificar atualização';
-        } else if (nome === 'verificando') {
-          bAt.disabled = true;
-          var g = document.createElement('span'); g.className = 'girando';
-          bAt.insertBefore(g, rotulo);
-          rotulo.textContent = 'Procurando atualização...';
-        } else if (nome === 'baixando') {
-          bAt.className = 'achou'; bAt.disabled = true;
-          barra.style.transform = 'scaleX(' + ((extra && extra.percentual || 0) / 100) + ')';
-          rotulo.textContent = 'Baixando... ' + Math.round(extra && extra.percentual || 0) + '%';
-        } else if (nome === 'pronto') {
-          bAt.className = 'pronto'; bAt.disabled = false;
-          rotulo.textContent = '🔁 Reiniciar e atualizar agora';
-        } else if (nome === 'atualizado') {
-          rotulo.textContent = '✅ Já está atualizado';
-          voltarPraOcioso = setTimeout(function(){ estado('ocioso'); }, 3500);
-        } else if (nome === 'erro') {
-          rotulo.textContent = '⚠️ Não consegui checar agora';
-          voltarPraOcioso = setTimeout(function(){ estado('ocioso'); }, 4000);
+      // botão direito numa pessoa (ficha no topo OU a tela que ela está
+      // transmitindo) abre o menu dela: volume só dela, silenciar, etc.
+      document.addEventListener('contextmenu', function(ev){
+        var alvo = ev.target;
+        if (!alvo || !alvo.closest) return;
+        var f = alvo.closest('.ficha:not(.eu)');
+        var q = f ? null : alvo.closest('.quadro[id^="q-p-"]');
+        if (!f && !q) return;
+        ev.preventDefault();
+        var id = f ? f.id.slice('ficha-'.length) : q.id.slice('q-p-'.length);
+        var par = (typeof pares !== 'undefined') && pares.get(id);
+        if (!par || typeof abrirMenuDaPessoa !== 'function') return;
+        abrirMenuDaPessoa(par, f || q);
+        var m = document.getElementById('menu-pessoa');
+        if (m) {
+          m.style.left = Math.max(10, Math.min(innerWidth - m.offsetWidth - 10, ev.clientX)) + 'px';
+          m.style.top  = Math.max(10, Math.min(innerHeight - m.offsetHeight - 10, ev.clientY)) + 'px';
         }
+      });
+
+      // avisa a casa no instante em que a call conecta de verdade
+      var ch = document.getElementById('chamada');
+      if (ch) {
+        var avisado = false;
+        var ver = function(){ if (!ch.hidden && !avisado) { avisado = true; window.bigasApp.avisar('conectada'); } };
+        new MutationObserver(ver).observe(ch, { attributes: true, attributeFilter: ['hidden'] });
+        ver();
       }
-      estado('ocioso');
-
-      bAt.onclick = function(){
-        if (bAt.className === 'pronto') { window.bigasApp.instalarAtualizacao(); return; }
-        window.bigasApp.verificarAtualizacao();
-      };
-      window.bigasApp.aoMudarEstadoAtualizacao(function(dados){ estado(dados.estado, dados); });
-
-      caixa.append(bCasa, bAt);
-      document.body.appendChild(caixa);
     })();
   `).catch(() => {});
+}
+
+/* dentro da view: clica no botão do site de criar sala e espera o link */
+const SCRIPT_CRIAR_SALA = `
+  (async function(){
+    var campo = document.getElementById('sala-link');
+    if (campo && campo.value) return campo.value; // o site já voltou pra sala sozinho
+    var b = document.getElementById('btn-sala');
+    if (!b) return null;
+    if (!b.disabled) b.click();
+    for (var i = 0; i < 120; i++) {
+      await new Promise(function(r){ setTimeout(r, 250); });
+      campo = document.getElementById('sala-link');
+      if (campo && campo.value) return campo.value;
+      var erro = document.getElementById('erro');
+      if (erro && !erro.hidden && erro.textContent) return null;
+    }
+    return null;
+  })();
+`;
+
+function ligarChamadas(){
+  // chamar um amigo: abre a call, o site cria a sala, e o link volta só
+  // pra casa guardar no convite (a pessoa nunca vê esse link)
+  ipcMain.handle('call:iniciar', async (ev, nick, comQuem) => {
+    if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return null;
+    nickAtual = String(nick || '').slice(0, 18);
+    outroNick = String(comQuem || '').slice(0, 18);
+    if (viewCall) await encerrarCall('trocou');
+    const v = criarViewCall();
+    avisarHome('call:estado', { estado: 'conectando' });
+    try{
+      await v.webContents.loadURL(SITE);
+      if (viewCall !== v) return null;
+      const link = await v.webContents.executeJavaScript(SCRIPT_CRIAR_SALA);
+      if (viewCall !== v) return null;
+      if (!link || !linkEhValido(link)) { encerrarCall('semLink'); return null; }
+      v.webContents.focus();
+      return link;
+    }catch(e){
+      console.error('iniciar call falhou', e);
+      if (viewCall === v) encerrarCall('semInternet');
+      return null;
+    }
+  });
+
+  // aceitar um convite: abre a call direto no link que veio no convite
+  ipcMain.handle('call:entrar', async (ev, link, nick, comQuem) => {
+    if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return false;
+    if (!linkEhValido(link)) return false;
+    nickAtual = String(nick || '').slice(0, 18);
+    outroNick = String(comQuem || '').slice(0, 18);
+    if (viewCall) await encerrarCall('trocou');
+    const v = criarViewCall();
+    avisarHome('call:estado', { estado: 'conectando' });
+    try{
+      await v.webContents.loadURL(link);
+      if (viewCall !== v) return false;
+      v.webContents.focus();
+      return true;
+    }catch(e){
+      console.error('entrar na call falhou', e);
+      if (viewCall === v) encerrarCall('semInternet');
+      return false;
+    }
+  });
+
+  ipcMain.on('call:sair', () => encerrarCall('saiu'));
+
+  // recados de dentro da call (ex.: "conectou de verdade")
+  ipcMain.on('call:aviso', (ev, o) => {
+    if (!viewCall || ev.sender !== viewCall.webContents) return;
+    if (o === 'conectada') avisarHome('call:estado', { estado: 'conectada' });
+  });
+
+  // a casa avisa onde fica o painel (a view da call se encaixa ali)
+  ipcMain.on('painel:rect', (ev, r) => {
+    if (!r || !(r.width > 0) || !(r.height > 0)) return;
+    rectPainel = {
+      x: Math.round(r.x), y: Math.round(r.y),
+      width: Math.round(r.width), height: Math.round(r.height),
+    };
+    posicionarView();
+  });
+
+  ipcMain.handle('app:versao', () => app.getVersion());
 }
 
 /* ---------------------------------------------------------------------
@@ -317,15 +437,14 @@ function ligarSeletorDeTela(){
 }
 
 /* ---------------------------------------------------------------------
- * ATUALIZAÇÃO AUTOMÁTICA DA CASCA
+ * ATUALIZAÇÃO AUTOMÁTICA DO APLICATIVO
  * ---------------------------------------------------------------------
- * Isto NÃO atualiza o Bigas Voice em si (o site já se atualiza sozinho
- * comparando VERSAO). Isto atualiza o APLICATIVO. Fonte: GitHub Releases
- * deste repositório, publicado com "npm run publicar".
+ * Fonte: GitHub Releases deste repositório, publicado com "npm run
+ * publicar". Baixa sozinho; instala ao fechar o app, ou na hora se a
+ * pessoa clicar no botão da casa quando ele ficar verde.
  * ------------------------------------------------------------------ */
 function transmitirEstadoAtualizacao(estado, extra){
-  if (janelaPrincipal && !janelaPrincipal.isDestroyed())
-    janelaPrincipal.webContents.send('atualizar:estado', Object.assign({ estado }, extra||{}));
+  avisarHome('atualizar:estado', Object.assign({ estado }, extra || {}));
 }
 
 function ligarAtualizacaoAutomatica(){
@@ -344,6 +463,8 @@ function ligarAtualizacaoAutomatica(){
   });
 
   autoUpdater.checkForUpdatesAndNotify().catch(() => transmitirEstadoAtualizacao('erro'));
+  // e de tempo em tempo, pra quem deixa o app aberto o dia inteiro
+  setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 60 * 60 * 1000);
 }
 
 function ligarVerificacaoManual(){
@@ -353,12 +474,13 @@ function ligarVerificacaoManual(){
   ipcMain.on('atualizar:instalar', () => autoUpdater.quitAndInstall());
 }
 
+/* ------------------------------------------------------------------ */
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   ligarPermissoes();
   ligarSeletorDeTela();
   ligarChamadas();
   ligarVerificacaoManual();
-  criarJanelaFundo();
   criarJanelaPrincipal();
   ligarAtualizacaoAutomatica();
 

@@ -5,117 +5,218 @@
 <title>Bigas Voice</title>
 <style>
   :root{
-    --fundo:#0c0d10; --sup:#171a21; --sup2:#1d212a; --sup3:#252a35;
-    --linha:#2a2f3a; --linha2:#353b48; --txt:#eef1f6; --txt2:#a2aab8; --txt3:#6d7583;
+    --fundo:#0c0d10; --sup:#111318; --sup2:#171a21; --sup3:#1f2430; --sup4:#2a3040;
+    --linha:#242938; --linha2:#353b48; --txt:#eef1f6; --txt2:#a2aab8; --txt3:#6d7583;
     --azul:#0891b2; --azul2:#22d3ee; --verde:#3fd07a; --vermelho:#f2564a; --amarelo:#f0b429;
   }
-  *{box-sizing:border-box}
-  html,body{height:100%}
+  *{ box-sizing:border-box }
+  html,body{ height:100% }
   body{
     margin:0; background:var(--fundo); color:var(--txt);
-    font:14px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif;
-    display:flex; overflow:hidden;
+    font:14px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;
+    display:flex; overflow:hidden; user-select:none;
   }
-  button{ border:0; border-radius:9px; cursor:pointer; font:inherit; font-weight:600 }
+  input{ user-select:text }
+  button{ border:0; border-radius:9px; cursor:pointer; font:inherit; font-weight:600; color:inherit; background:none }
   button:disabled{ opacity:.55; cursor:default }
+  button:focus-visible, input:focus-visible{ outline:2px solid var(--azul2); outline-offset:1px }
   input{
     background:#0c0d10; border:1px solid var(--linha2); border-radius:9px;
-    color:var(--txt); padding:11px 12px; font:inherit; width:100%;
+    color:var(--txt); padding:10px 12px; font:inherit; width:100%;
   }
   input:focus{ outline:none; border-color:var(--azul) }
+  input::placeholder{ color:var(--txt3) }
   .b-azul{ background:var(--azul); color:#fff; padding:11px }
   .b-azul:hover:not(:disabled){ background:var(--azul2); color:#0c0d10 }
-  .b-cinza{ background:var(--sup2); color:var(--txt2); padding:11px }
-  .b-cinza:hover:not(:disabled){ color:var(--txt) }
+  .b-cinza{ background:var(--sup3); color:var(--txt2); padding:11px }
+  .b-cinza:hover:not(:disabled){ color:var(--txt); background:var(--sup4) }
   .b-verde{ background:var(--verde); color:#0c0d10; padding:9px 14px }
   .b-verde:hover:not(:disabled){ background:#59d98d }
-  .erro{ color:var(--vermelho); font-size:12.5px; min-height:16px }
+  .b-vermelho{ background:var(--vermelho); color:#fff; padding:9px 14px }
+  .b-vermelho:hover:not(:disabled){ background:#ff6f64 }
+  .erro{ color:#ff9d94; font-size:12.5px; min-height:16px; margin:0 }
 
-  /* ---------- tela de login (antes de qualquer outra coisa) ---------- */
-  #tela-login{
-    flex:1; display:flex; align-items:center; justify-content:center;
+  @keyframes gira{ to{ transform:rotate(360deg) } }
+  .girando{
+    width:14px; height:14px; border:2px solid rgba(255,255,255,.2); border-top-color:var(--azul2);
+    border-radius:50%; animation:gira .8s linear infinite; flex-shrink:0;
   }
-  #caixa-login{ width:100%; max-width:340px; display:flex; flex-direction:column; gap:12px; padding:24px }
-  .marca-login{ display:flex; align-items:center; gap:12px; margin-bottom:6px }
-  .marca-login .logo{
-    width:44px; height:44px; border-radius:13px; flex-shrink:0;
+  @keyframes pulsa{ 0%,100%{ opacity:1 } 50%{ opacity:.35 } }
+
+  /* ================= LOGIN ================= */
+  #tela-login{ flex:1; display:flex; align-items:center; justify-content:center;
+    background:
+      radial-gradient(600px 400px at 30% 20%, rgba(8,145,178,.14), transparent 60%),
+      radial-gradient(500px 400px at 80% 90%, rgba(34,211,238,.06), transparent 60%);
+  }
+  #caixa-login{
+    width:100%; max-width:360px; display:flex; flex-direction:column; gap:12px; padding:28px;
+    background:var(--sup2); border:1px solid var(--linha); border-radius:18px;
+    box-shadow:0 30px 60px rgba(0,0,0,.45);
+  }
+  .marca{ display:flex; align-items:center; gap:12px; margin-bottom:8px }
+  .logo{
+    width:46px; height:46px; border-radius:14px; flex-shrink:0;
     background:linear-gradient(145deg,var(--azul),#0e7490);
     display:flex; align-items:center; justify-content:center; color:#fff;
+    box-shadow:0 8px 22px rgba(8,145,178,.35);
   }
-  .marca-login h1{ font-size:19px; margin:0 }
-  .marca-login p{ font-size:12px; color:var(--txt3); margin:2px 0 0 }
+  .marca h1{ font-size:20px; margin:0; letter-spacing:-.01em }
+  .marca p{ font-size:12px; color:var(--txt3); margin:2px 0 0 }
   label{ display:block; font-size:12px; color:var(--txt2); margin-bottom:5px }
-  .botoes-login{ display:flex; gap:9px }
+  .botoes-login{ display:flex; gap:9px; margin-top:4px }
   .botoes-login button{ flex:1 }
 
-  /* ---------- casa (logado): trilho + amigos + painel ---------- */
+  /* ================= CASA ================= */
   #tela-casa{ display:none; flex:1; min-width:0 }
+
   .trilho{
-    width:64px; flex-shrink:0; background:var(--sup); border-right:1px solid var(--linha);
-    display:flex; flex-direction:column; align-items:center; gap:10px; padding:14px 0;
+    width:66px; flex-shrink:0; background:var(--sup); border-right:1px solid var(--linha);
+    display:flex; flex-direction:column; align-items:center; gap:10px; padding:12px 0;
   }
+  .trilho .logo{ width:44px; height:44px; border-radius:14px; box-shadow:none }
+  .trilho .risco{ width:28px; height:1px; background:var(--linha2); margin:2px 0 }
   .trilho .icone{
     width:44px; height:44px; border-radius:14px; background:var(--sup2);
-    display:flex; align-items:center; justify-content:center; font-size:19px;
-    color:var(--txt2); position:relative;
+    display:flex; align-items:center; justify-content:center; font-size:19px; color:var(--txt2);
   }
-  .trilho .icone.ativo{ background:var(--azul); color:#fff; border-radius:16px }
+  .trilho .icone.ativo{ background:var(--azul); color:#fff }
 
   .coluna-amigos{
-    width:260px; flex-shrink:0; background:var(--sup2); border-right:1px solid var(--linha);
+    width:280px; flex-shrink:0; background:var(--sup2); border-right:1px solid var(--linha);
     display:flex; flex-direction:column; min-height:0;
   }
-  .coluna-amigos .cabecalho{
-    padding:16px 14px 10px; display:flex; align-items:center; justify-content:space-between;
-  }
-  .coluna-amigos .cabecalho b{ font-size:14px }
-  .sair{ background:none; color:var(--txt3); font-size:11.5px; text-decoration:underline; padding:0 }
-  .add-amigo{ padding:0 14px 12px; display:flex; gap:6px }
-  .add-amigo input{ font-size:12.5px; padding:9px 10px }
-  .add-amigo button{ padding:9px 12px; font-size:12.5px; white-space:nowrap }
-  .erro-add{ padding:0 14px 8px; margin:0 }
+  .cabecalho{ padding:16px 16px 10px; font-size:15px; font-weight:700 }
+  .add-amigo{ padding:0 12px 6px; display:flex; gap:6px }
+  .add-amigo input{ font-size:13px; padding:9px 10px }
+  .add-amigo button{ padding:9px 13px; font-size:13px; white-space:nowrap }
+  .erro-add{ padding:0 14px 6px }
 
-  h2{ font-size:11px; margin:0; padding:6px 14px; color:var(--txt3); text-transform:uppercase; letter-spacing:.05em }
-  .lista-amigos{ flex:1; overflow-y:auto; padding:0 8px 12px; display:flex; flex-direction:column; gap:3px }
-  .amigo{
-    display:flex; align-items:center; gap:10px; padding:9px 8px; border-radius:8px; cursor:default;
-  }
+  h2{ font-size:11px; margin:0; padding:8px 16px 4px; color:var(--txt3); text-transform:uppercase; letter-spacing:.06em }
+  .lista-amigos{ flex:1; overflow-y:auto; padding:0 8px 8px; display:flex; flex-direction:column; gap:2px }
+  .lista-amigos::-webkit-scrollbar{ width:8px }
+  .lista-amigos::-webkit-scrollbar-thumb{ background:var(--sup4); border-radius:8px }
+  .amigo{ display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:8px }
   .amigo:hover{ background:var(--sup3) }
-  .amigo .avatar{
-    width:32px; height:32px; border-radius:50%; background:var(--sup3); flex-shrink:0;
+  .avatar{
+    width:34px; height:34px; border-radius:50%; background:var(--sup4); flex-shrink:0; position:relative;
     display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; color:var(--txt2);
   }
-  .amigo .nome{ flex:1; font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .amigo .chamar{ opacity:0; transition:opacity .12s }
-  .amigo:hover .chamar{ opacity:1 }
-  .vazio{ color:var(--txt3); font-size:12.5px; text-align:center; padding:18px 14px }
-
-  /* ---------- painel principal (sem call ativa daqui) ---------- */
-  .painel{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-width:0 }
-  .painel .logo-grande{
-    width:72px; height:72px; border-radius:22px; color:#fff; font-size:30px;
-    background:linear-gradient(145deg,var(--azul),#0e7490);
-    display:flex; align-items:center; justify-content:center; margin-bottom:6px;
+  .avatar .luz{
+    position:absolute; right:-2px; bottom:-2px; width:12px; height:12px; border-radius:50%;
+    background:var(--txt3); border:2.5px solid var(--sup2);
   }
-  .painel h2{ padding:0; text-transform:none; letter-spacing:0; font-size:16px; color:var(--txt) }
-  .painel p{ color:var(--txt3); font-size:13px; max-width:280px; text-align:center }
-
-  /* convite chegando: aviso no topo da coluna de amigos */
-  .convite-chegando{
-    display:none; margin:0 10px 10px; padding:10px 12px; border-radius:10px;
-    background:var(--sup3); border:1px solid var(--azul);
-    flex-direction:column; gap:8px;
+  .amigo:hover .avatar .luz{ border-color:var(--sup3) }
+  .amigo.online .luz{ background:var(--verde) }
+  .amigo.emcall .luz{ background:var(--azul2) }
+  .amigo .txt{ flex:1; min-width:0 }
+  .amigo .nome{ font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .amigo .estado{ font-size:11.5px; color:var(--txt3) }
+  .amigo.online .estado{ color:var(--txt2) }
+  .amigo .acoes{ display:flex; gap:4px; opacity:0; transition:opacity .12s }
+  .amigo:hover .acoes{ opacity:1 }
+  .amigo .acoes button{
+    width:32px; height:32px; border-radius:50%; background:var(--sup4); color:var(--txt);
+    display:flex; align-items:center; justify-content:center; font-size:14px;
   }
-  .convite-chegando.tem{ display:flex }
-  .convite-chegando b{ font-size:13px }
-  .convite-chegando .linha{ display:flex; align-items:center; justify-content:space-between; gap:8px }
+  .amigo .acoes .chamar:hover:not(:disabled){ background:var(--verde); color:#0c0d10 }
+  .amigo .acoes .tirar:hover{ background:var(--vermelho); color:#fff }
+  .amigo .acoes .chamar.ocupado{ width:auto; padding:0 10px; border-radius:16px; font-size:12px }
+  .vazio{ color:var(--txt3); font-size:12.5px; text-align:center; padding:22px 14px; line-height:1.6 }
+
+  /* convite chegando */
+  .convite{
+    display:none; margin:6px 10px 8px; padding:12px; border-radius:12px;
+    background:linear-gradient(160deg, rgba(8,145,178,.22), rgba(8,145,178,.06));
+    border:1px solid rgba(34,211,238,.45); flex-direction:column; gap:10px;
+  }
+  .convite.tem{ display:flex }
+  .convite .quem{ display:flex; align-items:center; gap:10px }
+  .convite .quem .avatar{ background:var(--azul); color:#fff; animation:pulsa 1.2s ease-in-out infinite }
+  .convite b{ font-size:13.5px; display:block }
+  .convite small{ color:var(--txt2); font-size:11.5px }
+  .convite .botoes{ display:flex; gap:8px }
+  .convite .botoes button{ flex:1; padding:9px 10px; font-size:13px }
+
+  /* barra da call (aparece só durante uma chamada) */
+  .painel-call{
+    display:none; margin:0 10px 8px; padding:10px 12px; border-radius:12px;
+    background:var(--sup3); border:1px solid var(--linha2); align-items:center; gap:10px;
+  }
+  .painel-call.tem{ display:flex }
+  .painel-call .txt{ flex:1; min-width:0 }
+  .painel-call .titulo{ font-size:12.5px; font-weight:700; color:var(--verde); display:flex; align-items:center; gap:7px }
+  .painel-call.conectando .titulo{ color:var(--amarelo) }
+  .painel-call .sub{ font-size:11.5px; color:var(--txt2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .painel-call button{ padding:8px 12px; font-size:12.5px }
+
+  /* rodapé: você, versão, atualizar */
+  .rodape{
+    border-top:1px solid var(--linha); background:var(--sup); padding:10px 12px;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .eu{ display:flex; align-items:center; gap:10px }
+  .eu .avatar{ background:var(--azul); color:#fff }
+  .eu .txt{ flex:1; min-width:0 }
+  .eu .nome{ font-size:13.5px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .eu .versao{ font-size:11px; color:var(--txt3) }
+  .eu .sair{ width:32px; height:32px; border-radius:8px; color:var(--txt3); font-size:15px; display:flex; align-items:center; justify-content:center }
+  .eu .sair:hover{ background:var(--sup3); color:var(--txt) }
+
+  #btn-atualizar{
+    position:relative; overflow:hidden; width:100%; padding:9px 12px; font-size:12.5px;
+    background:var(--sup3); border:1px solid var(--linha2); color:var(--txt2);
+    display:flex; align-items:center; justify-content:center; gap:8px;
+  }
+  #btn-atualizar:hover:not(:disabled){ color:var(--txt); border-color:var(--azul) }
+  #btn-atualizar.achou{ border-color:var(--azul) }
+  #btn-atualizar.pronto{ background:var(--verde); border-color:var(--verde); color:#0c0d10; font-weight:700 }
+  #btn-atualizar.pronto:hover{ background:#59d98d }
+  #btn-atualizar:disabled{ opacity:.9 }
+  #btn-atualizar .barra{
+    position:absolute; inset:0; background:var(--azul); z-index:0;
+    transform-origin:left; transform:scaleX(0); transition:transform .25s linear;
+  }
+  #btn-atualizar span{ position:relative; z-index:1; white-space:nowrap }
+  #btn-atualizar .girando{ position:relative; z-index:1; width:12px; height:12px }
+
+  /* ================= PAINEL ================= */
+  .painel{
+    flex:1; min-width:0; position:relative; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:10px; text-align:center;
+    background:var(--fundo);
+    background-image:
+      linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
+    background-size:28px 28px;
+  }
+  .painel .logo{ width:76px; height:76px; border-radius:24px; margin-bottom:8px }
+  .painel h3{ margin:0; font-size:17px }
+  .painel p{ color:var(--txt3); font-size:13px; max-width:320px; margin:0; line-height:1.6 }
+  .painel .conectando{ display:none; flex-direction:column; align-items:center; gap:14px }
+  .painel.conectando .descanso{ display:none }
+  .painel.conectando .conectando{ display:flex }
+  .painel .conectando .girando{ width:34px; height:34px; border-width:3px }
+
+  /* recado rápido (embaixo do painel) */
+  .recado{
+    position:absolute; left:50%; bottom:22px; transform:translateX(-50%) translateY(12px);
+    background:var(--sup3); border:1px solid var(--linha2); color:var(--txt);
+    padding:10px 16px; border-radius:12px; font-size:13px; opacity:0; pointer-events:none;
+    transition:opacity .2s, transform .2s; box-shadow:0 10px 30px rgba(0,0,0,.4); max-width:80%;
+  }
+  .recado.mostra{ opacity:1; transform:translateX(-50%) translateY(0) }
+  .recado.mal{ border-color:var(--vermelho) }
+  .recado.bem{ border-color:var(--verde) }
+
+  @media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important } }
 </style>
 </head>
 <body>
 
   <div id="tela-login">
     <div id="caixa-login">
-      <div class="marca-login">
+      <div class="marca">
         <div class="logo">
           <svg viewBox="0 0 512 512" width="26" height="26" aria-hidden="true">
             <path d="M103 154 V104 H153" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
@@ -132,7 +233,7 @@
       </div>
       <div>
         <label for="nick">Seu nick</label>
-        <input id="nick" type="text" maxlength="20" placeholder="ex: BigHouse" autocomplete="off">
+        <input id="nick" type="text" maxlength="18" placeholder="ex: BigHouse" autocomplete="off" spellcheck="false">
       </div>
       <div>
         <label for="senha">Senha</label>
@@ -148,34 +249,8 @@
 
   <div id="tela-casa">
     <div class="trilho">
-      <div class="icone ativo" title="Amigos">🏠</div>
-    </div>
-    <div class="coluna-amigos">
-      <div class="cabecalho">
-        <b id="meu-nick"></b>
-        <button class="sair" id="btn-sair" type="button">sair</button>
-      </div>
-
-      <div class="convite-chegando" id="convite-chegando">
-        <b id="convite-texto"></b>
-        <div class="linha">
-          <button class="b-verde" id="btn-aceitar-convite" type="button" style="flex:1">Entrar na chamada</button>
-        </div>
-      </div>
-
-      <div class="add-amigo">
-        <input id="add-nick" type="text" maxlength="20" placeholder="nick do amigo" autocomplete="off">
-        <button id="btn-add" class="b-azul" type="button">+</button>
-      </div>
-      <p class="erro erro-add" id="erro-add"></p>
-
-      <h2>Amigos</h2>
-      <div class="lista-amigos" id="lista-amigos"><p class="vazio">Nenhum amigo salvo ainda. Adiciona pelo nick aí em cima.</p></div>
-    </div>
-
-    <div class="painel">
-      <div class="logo-grande">
-        <svg viewBox="0 0 512 512" width="34" height="34" aria-hidden="true">
+      <div class="logo" title="Bigas Voice">
+        <svg viewBox="0 0 512 512" width="24" height="24" aria-hidden="true">
           <path d="M103 154 V104 H153" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M409 358 V408 H359" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
           <rect x="163" y="220" width="54" height="128" rx="18" fill="currentColor"/>
@@ -183,8 +258,73 @@
           <rect x="295" y="196" width="54" height="152" rx="18" fill="currentColor"/>
         </svg>
       </div>
-      <h2>Escolha um amigo pra chamar</h2>
-      <p>Passa o mouse num amigo na lista e clica em "Chamar" — ele recebe na hora, sem link, sem código.</p>
+      <div class="risco"></div>
+      <div class="icone ativo" title="Amigos">🏠</div>
+    </div>
+
+    <div class="coluna-amigos">
+      <div class="cabecalho">Amigos</div>
+
+      <div class="add-amigo">
+        <input id="add-nick" type="text" maxlength="18" placeholder="adicionar pelo nick" autocomplete="off" spellcheck="false">
+        <button id="btn-add" class="b-azul" type="button" title="Adicionar amigo">+</button>
+      </div>
+      <p class="erro erro-add" id="erro-add"></p>
+
+      <div class="convite" id="convite">
+        <div class="quem">
+          <div class="avatar" id="convite-av">?</div>
+          <div><b id="convite-nick"></b><small>está te chamando</small></div>
+        </div>
+        <div class="botoes">
+          <button class="b-verde" id="btn-atender" type="button">📞 Atender</button>
+          <button class="b-cinza" id="btn-recusar" type="button">Recusar</button>
+        </div>
+      </div>
+
+      <h2 id="titulo-lista">Amigos</h2>
+      <div class="lista-amigos" id="lista-amigos"></div>
+
+      <div class="painel-call" id="painel-call">
+        <div class="txt">
+          <div class="titulo"><span class="girando" id="call-girando" hidden></span><span id="call-titulo">Em chamada</span></div>
+          <div class="sub" id="call-sub"></div>
+        </div>
+        <button class="b-vermelho" id="btn-sair-call" type="button" title="Sair da chamada">Sair</button>
+      </div>
+
+      <div class="rodape">
+        <div class="eu">
+          <div class="avatar" id="meu-av">?</div>
+          <div class="txt">
+            <div class="nome" id="meu-nick"></div>
+            <div class="versao" id="versao">aplicativo</div>
+          </div>
+          <button class="sair" id="btn-sair-conta" type="button" title="Sair da conta">⏻</button>
+        </div>
+        <button id="btn-atualizar" type="button"><div class="barra"></div><span>🔄 Verificar atualização</span></button>
+      </div>
+    </div>
+
+    <div class="painel" id="painel">
+      <div class="descanso">
+        <div class="logo">
+          <svg viewBox="0 0 512 512" width="36" height="36" aria-hidden="true">
+            <path d="M103 154 V104 H153" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M409 358 V408 H359" fill="none" stroke="currentColor" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+            <rect x="163" y="220" width="54" height="128" rx="18" fill="currentColor"/>
+            <rect x="229" y="164" width="54" height="184" rx="18" fill="currentColor"/>
+            <rect x="295" y="196" width="54" height="152" rx="18" fill="currentColor"/>
+          </svg>
+        </div>
+        <h3>Chama alguém</h3>
+        <p>Passa o mouse num amigo na lista e clica em 📞. Ele recebe na hora, aqui dentro do app.</p>
+      </div>
+      <div class="conectando">
+        <div class="girando"></div>
+        <h3 id="conectando-txt">Abrindo a chamada…</h3>
+      </div>
+      <div class="recado" id="recado"></div>
     </div>
   </div>
 

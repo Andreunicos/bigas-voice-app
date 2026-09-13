@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",
@@ -21,6 +21,8 @@
   "build": {
     "appId": "io.github.andreunicos.bigasvoice",
     "productName": "Bigas Voice",
+    "compression": "maximum",
+    "asar": true,
     "files": [
       "main.js",
       "preload.js",
