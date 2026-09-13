@@ -88,8 +88,8 @@ function injetarBotaoDeLink(){
       font:inherit; color:#fff; box-shadow:0 8px 22px rgba(0,0,0,.45);
       display:flex; align-items:center; gap:8px; position:relative; overflow:hidden;
     }
-    #bigas-link{ background:#171a21; border:1px solid #2a2f3a }
-    #bigas-link:hover{ background:#1d212a; border-color:#0891b2 }
+    #bigas-link, #bigas-conta{ background:#171a21; border:1px solid #2a2f3a }
+    #bigas-link:hover, #bigas-conta:hover{ background:#1d212a; border-color:#0891b2 }
     /* estados do botão de atualizar — cor muda com o que está acontecendo,
        não é só o texto: parado é neutro, achou é azul, pronto é verde */
     #bigas-atualizar{ background:#171a21; border:1px solid #2a2f3a; min-width:190px; justify-content:center }
@@ -128,6 +128,11 @@ function injetarBotaoDeLink(){
       bLink.id = 'bigas-link'; bLink.type = 'button';
       bLink.textContent = '🔗 Entrar com um link';
       bLink.onclick = function(){ window.bigasApp.abrirColarLink(); };
+
+      var bConta = document.createElement('button');
+      bConta.id = 'bigas-conta'; bConta.type = 'button';
+      bConta.textContent = '👤 Conta e amigos';
+      bConta.onclick = function(){ window.bigasApp.abrirConta(); };
 
       var bAt = document.createElement('button');
       bAt.id = 'bigas-atualizar'; bAt.type = 'button';
@@ -174,7 +179,7 @@ function injetarBotaoDeLink(){
       };
       window.bigasApp.aoMudarEstadoAtualizacao(function(dados){ estado(dados.estado, dados); });
 
-      caixa.append(bLink, bAt);
+      caixa.append(bLink, bConta, bAt);
       document.body.appendChild(caixa);
     })();
   `).catch(() => {});
@@ -202,11 +207,14 @@ function abrirColarLink(){
   janela.loadFile('colar-link.html');
 }
 
+function linkEhValido(url){
+  try { return new URL(url).origin === new URL(SITE).origin; } catch { return false; }
+}
+
 function ligarEntradaPorLink(){
   ipcMain.on('colar-link:abrir', () => abrirColarLink());
   ipcMain.on('colar-link:entrar', (ev, url) => {
-    let valido = false;
-    try { valido = new URL(url).origin === new URL(SITE).origin; } catch { valido = false; }
+    const valido = linkEhValido(url);
     if (valido) {
       janelaPrincipal.loadURL(url);
       const janela = BrowserWindow.fromWebContents(ev.sender);
@@ -214,6 +222,73 @@ function ligarEntradaPorLink(){
     }
     ev.returnValue = valido;
   });
+  // mesma coisa, mas sem fechar a janela de quem pediu — usado pela tela
+  // de Conta, que continua aberta depois de mandar você pra call
+  ipcMain.on('colar-link:entrar-silencioso', (ev, url) => {
+    if (linkEhValido(url)) janelaPrincipal.loadURL(url);
+  });
+}
+
+/* ---------------------------------------------------------------------
+ * CONTA E AMIGOS
+ * ---------------------------------------------------------------------
+ * Essa janela roda o SDK do Firebase (autenticação + Firestore) — não
+ * mexe no site nem no protocolo dele. A única ponte com o site real é
+ * pedir um link de sala de verdade: em vez de reimplementar a criptografia
+ * do Bigas Voice aqui (arriscado, duplicaria lógica e quebraria fácil se o
+ * site mudar), a gente pede pra JANELA PRINCIPAL — que já tem o site
+ * carregado — clicar no próprio botão "Criar sala" dela mesma, e devolve
+ * o link que apareceu. Sempre o site quem gera o link; a Conta só pede.
+ * ------------------------------------------------------------------ */
+let janelaConta = null;
+
+function abrirConta(){
+  if (janelaConta && !janelaConta.isDestroyed()) { janelaConta.focus(); return; }
+  janelaConta = new BrowserWindow({
+    width: 420,
+    height: 620,
+    parent: janelaPrincipal,
+    title: 'Conta e amigos — Bigas Voice',
+    backgroundColor: '#121419',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, 'conta-preload.js'),
+    },
+  });
+  janelaConta.loadFile('conta.html');
+  janelaConta.on('closed', () => { janelaConta = null; });
+}
+
+async function gerarLinkNoSite(){
+  if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return null;
+  try{
+    return await janelaPrincipal.webContents.executeJavaScript(`
+      (async function(){
+        var jaTem = document.getElementById('sala-link');
+        if (jaTem && jaTem.value) return jaTem.value;
+        var botao = document.getElementById('btn-sala');
+        if (!botao) return null; // não está na tela de entrada — não dá pra criar sala agora
+        botao.click();
+        for (var i = 0; i < 60; i++) {
+          await new Promise(function(r){ setTimeout(r, 300); });
+          var campo = document.getElementById('sala-link');
+          if (campo && campo.value) return campo.value;
+        }
+        return null;
+      })();
+    `);
+  }catch(e){
+    console.error('gerar link pro convite falhou', e);
+    return null;
+  }
+}
+
+function ligarConta(){
+  ipcMain.on('conta:abrir', () => abrirConta());
+  ipcMain.handle('conta:gerar-link', () => gerarLinkNoSite());
 }
 
 /* ---------------------------------------------------------------------
@@ -354,6 +429,7 @@ app.whenReady().then(() => {
   ligarPermissoes();
   ligarSeletorDeTela();
   ligarEntradaPorLink();
+  ligarConta();
   ligarVerificacaoManual();
   criarJanelaPrincipal();
   ligarAtualizacaoAutomatica();

@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('bigasColarLink', {
 // — o botão flutuante de "entrar com um link" chama isto.
 contextBridge.exposeInMainWorld('bigasApp', {
   abrirColarLink: () => ipcRenderer.send('colar-link:abrir'),
+  abrirConta: () => ipcRenderer.send('conta:abrir'),
   verificarAtualizacao: () => ipcRenderer.send('atualizar:verificar'),
   instalarAtualizacao: () => ipcRenderer.send('atualizar:instalar'),
   aoMudarEstadoAtualizacao: (funcao) => {
