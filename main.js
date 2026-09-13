@@ -2,32 +2,55 @@
  * BIGAS VOICE — o aplicativo (Discord 2.0)
  * ---------------------------------------------------------------------
  * A janela principal mostra SEMPRE a casa (home.html): login, depois a
- * lista de amigos. Ela nunca navega pra outro lugar.
+ * lista de amigos + chat. Ela nunca navega pra outro lugar.
  *
- * Uma call é uma `WebContentsView` encaixada por cima do painel da casa
- * (a área grande à direita da lista de amigos). Dentro dela roda o site
- * de verdade do Bigas Voice — e o app veste esse site com CSS e um
- * pouquinho de JS pra que nada de "link", "código", "criar sala" apareça:
- * só a call em si. Quando a call acaba, a view é destruída e o painel
- * volta a aparecer. A lista de amigos nunca sai da tela.
+ * Uma call é uma `WebContentsView` encaixada por cima do palco da casa
+ * (a área grande à direita). Dentro dela roda o site de verdade do
+ * Bigas Voice — e o app veste esse site com CSS e um pouquinho de JS pra
+ * que nada de "link", "código", "criar sala" apareça: só a call em si.
+ * Quando a call acaba, a view é destruída e o palco volta. A lista de
+ * amigos nunca sai da tela.
  *
  * Quem cria a sala continua sendo o PRÓPRIO site (clicando de verdade no
  * botão dele, dentro da view) — nunca reimplementamos a criptografia
- * aqui. E quem cria é a view VISÍVEL, então você é o dono da sala de
- * verdade (pode tirar gente da call, por exemplo).
+ * aqui. E quem cria é a view VISÍVEL, então você é o dono da sala.
  * ================================================================== */
-const { app, BrowserWindow, WebContentsView, session, desktopCapturer, ipcMain, shell, Menu } = require('electron');
+const {
+  app, BrowserWindow, WebContentsView, session, desktopCapturer, ipcMain,
+  shell, Menu, Tray, Notification, globalShortcut, nativeImage,
+} = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { autoUpdater } = require('electron-updater');
 
 const SITE = 'https://andreunicos.github.io/';
+const ICONE = path.join(__dirname, 'icone.png');
 
 let janelaPrincipal = null;
 let viewCall = null;          // a call em andamento (ou null)
+let bandeja = null;           // ícone na bandeja (só se a pessoa ligar)
 let nickAtual = '';           // nick da conta logada, pra assinar dentro do site
 let outroNick = '';           // nick de quem está do outro lado (só pra textos)
-let rectPainel = { x: 324, y: 0, width: 956, height: 820 }; // onde a call se encaixa (a casa avisa)
+let rectPalco = { x: 346, y: 0, width: 934, height: 820 }; // onde a call se encaixa (a casa avisa)
 let emTelaCheia = false;      // alguém pediu "tela cheia" num vídeo dentro da call
+let saindoDeVerdade = false;  // "Sair" na bandeja / quitAndInstall: ignora "minimizar pra bandeja"
+
+/* ---------------------------------------------------------------------
+ * CONFIGURAÇÃO (fica em userData/config.json; a casa manda mudanças)
+ * ------------------------------------------------------------------ */
+const ARQ_CONFIG = () => path.join(app.getPath('userData'), 'config.json');
+let config = { bandeja: false, iniciarComWindows: false, atalhoMic: 'Control+Shift+M', atalhoSurdo: 'Control+Shift+D' };
+function lerConfig(){
+  try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
+}
+function guardarConfig(){
+  try { fs.writeFileSync(ARQ_CONFIG(), JSON.stringify(config, null, 2)); } catch (e) { console.error('config', e); }
+}
+function aplicarConfig(){
+  if (config.bandeja) criarBandeja(); else destruirBandeja();
+  try { app.setLoginItemSettings({ openAtLogin: !!config.iniciarComWindows }); } catch {}
+  registrarAtalhos();
+}
 
 function linkEhValido(url){
   try { return new URL(url).origin === new URL(SITE).origin; } catch { return false; }
@@ -40,9 +63,10 @@ function criarJanelaPrincipal(){
   janelaPrincipal = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 860,
+    minWidth: 900,
     minHeight: 600,
     title: 'Bigas Voice',
+    icon: ICONE,
     backgroundColor: '#0c0d10',
     autoHideMenuBar: true,
     webPreferences: {
@@ -69,15 +93,87 @@ function criarJanelaPrincipal(){
   });
 
   janelaPrincipal.on('resize', posicionarView);
-  // fechar a janela É fechar o app — nada fica em segundo plano. (A 0.3.0
-  // tinha uma janela invisível que nunca fechava; o processo ficava vivo
-  // e a atualização, que instala ao encerrar, nunca acontecia.)
+  janelaPrincipal.on('focus', () => { janelaPrincipal.flashFrame(false); });
+
+  // fechar a janela: encerra o app — OU, se a pessoa LIGOU "bandeja",
+  // some pra bandeja (numa call, continua na call). Nunca fica em segundo
+  // plano sem a pessoa ter pedido.
+  janelaPrincipal.on('close', (ev) => {
+    if (config.bandeja && !saindoDeVerdade) {
+      ev.preventDefault();
+      janelaPrincipal.hide();
+    }
+  });
   janelaPrincipal.on('closed', () => { janelaPrincipal = null; viewCall = null; app.quit(); });
+}
+
+function mostrarJanela(){
+  if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return;
+  if (!janelaPrincipal.isVisible()) janelaPrincipal.show();
+  if (janelaPrincipal.isMinimized()) janelaPrincipal.restore();
+  janelaPrincipal.focus();
 }
 
 function avisarHome(canal, dados){
   if (janelaPrincipal && !janelaPrincipal.isDestroyed())
     janelaPrincipal.webContents.send(canal, dados || {});
+}
+
+/* ---------------------------------------------------------------------
+ * BANDEJA (opcional) E NOTIFICAÇÕES
+ * ------------------------------------------------------------------ */
+function criarBandeja(){
+  if (bandeja) return;
+  try{
+    const img = nativeImage.createFromPath(ICONE).resize({ width: 16, height: 16 });
+    bandeja = new Tray(img);
+    bandeja.setToolTip('Bigas Voice');
+    bandeja.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Abrir o Bigas Voice', click: mostrarJanela },
+      { type: 'separator' },
+      { label: 'Sair', click: () => { saindoDeVerdade = true; app.quit(); } },
+    ]));
+    bandeja.on('click', mostrarJanela);
+    bandeja.on('double-click', mostrarJanela);
+  }catch(e){ console.error('bandeja', e); bandeja = null; }
+}
+function destruirBandeja(){
+  if (bandeja) { try { bandeja.destroy(); } catch {} bandeja = null; }
+}
+
+function notificar(titulo, texto){
+  if (!Notification.isSupported()) return;
+  try{
+    const n = new Notification({ title: titulo, body: texto, icon: ICONE, silent: true });
+    n.on('click', mostrarJanela);
+    n.show();
+  }catch(e){ console.warn('notificação', e); }
+}
+
+/* ---------------------------------------------------------------------
+ * ATALHOS GLOBAIS — mutar / silenciar de dentro do jogo
+ * ---------------------------------------------------------------------
+ * O Electron só sabe quando a tecla DESCE (não quando solta), então isto
+ * é liga/desliga, não "segurar pra falar". Segurar pra falar de verdade
+ * fora da janela precisaria de um gancho nativo de teclado — fica pra
+ * quando valer a pena instalar um.
+ * ------------------------------------------------------------------ */
+function registrarAtalhos(){
+  globalShortcut.unregisterAll();
+  const ligar = (combo, funcao) => {
+    if (!combo) return;
+    try { if (!globalShortcut.register(combo, funcao)) console.warn('atalho ocupado:', combo); }
+    catch (e) { console.warn('atalho inválido:', combo, e.message); }
+  };
+  ligar(config.atalhoMic, () => acionarNaCall('mic'));
+  ligar(config.atalhoSurdo, () => acionarNaCall('surdo'));
+}
+
+/* aperta o botão do site (mic / fone) dentro da call, se houver call */
+function acionarNaCall(qual){
+  if (!viewCall) return;
+  const fn = qual === 'mic' ? 'alternarMudo' : 'alternarSurdo';
+  viewCall.webContents.executeJavaScript('try{ ' + fn + '(); }catch(e){} true').catch(() => {});
 }
 
 /* ---------------------------------------------------------------------
@@ -89,7 +185,7 @@ function posicionarView(){
     const b = janelaPrincipal.getContentBounds();
     viewCall.setBounds({ x: 0, y: 0, width: b.width, height: b.height });
   } else {
-    viewCall.setBounds(rectPainel);
+    viewCall.setBounds(rectPalco);
   }
 }
 
@@ -172,8 +268,8 @@ async function encerrarCall(motivo){
  * menos o texto de estado ("esperando…", "conectando…") e erros.
  *
  * Também: assina com o nick da conta; "botão direito" numa pessoa abre o
- * menu dela (volume, silenciar) igual no Discord; e o botão de encerrar
- * do site passa a devolver a pessoa pra casa, em vez de recarregar o site.
+ * menu dela (volume, silenciar) igual no Discord; o botão de encerrar do
+ * site devolve a pessoa pra casa; e mic/fone são espelhados pro rodapé.
  * ------------------------------------------------------------------ */
 function vestirSite(wc){
   wc.insertCSS(`
@@ -261,7 +357,8 @@ function vestirSite(wc){
         }
       });
 
-      // avisa a casa no instante em que a call conecta de verdade
+      // avisa a casa no instante em que a call conecta de verdade, e
+      // espelha mic/fone (o rodapé da casa mostra e controla os dois)
       var ch = document.getElementById('chamada');
       if (ch) {
         var avisado = false;
@@ -269,6 +366,13 @@ function vestirSite(wc){
         new MutationObserver(ver).observe(ch, { attributes: true, attributeFilter: ['hidden'] });
         ver();
       }
+      var bm = document.getElementById('btn-mic'), bs = document.getElementById('btn-surdo');
+      var espelhar = function(){
+        window.bigasApp.avisar('controles:' + (bm && bm.classList.contains('on') ? 1 : 0) + (bs && bs.classList.contains('on') ? 1 : 0));
+      };
+      if (bm) new MutationObserver(espelhar).observe(bm, { attributes: true, attributeFilter: ['class'] });
+      if (bs) new MutationObserver(espelhar).observe(bs, { attributes: true, attributeFilter: ['class'] });
+      espelhar();
     })();
   `).catch(() => {});
 }
@@ -339,24 +443,48 @@ function ligarChamadas(){
   });
 
   ipcMain.on('call:sair', () => encerrarCall('saiu'));
+  ipcMain.on('call:mic', () => acionarNaCall('mic'));
+  ipcMain.on('call:surdo', () => acionarNaCall('surdo'));
 
-  // recados de dentro da call (ex.: "conectou de verdade")
+  // recados de dentro da call (ex.: "conectou de verdade", mic/fone)
   ipcMain.on('call:aviso', (ev, o) => {
     if (!viewCall || ev.sender !== viewCall.webContents) return;
+    o = String(o || '');
     if (o === 'conectada') avisarHome('call:estado', { estado: 'conectada' });
+    else if (o.startsWith('controles:')) avisarHome('call:controles', { mudo: o[10] === '1', surdo: o[11] === '1' });
   });
 
-  // a casa avisa onde fica o painel (a view da call se encaixa ali)
-  ipcMain.on('painel:rect', (ev, r) => {
+  // a casa avisa onde fica o palco (a view da call se encaixa ali)
+  ipcMain.on('palco:rect', (ev, r) => {
     if (!r || !(r.width > 0) || !(r.height > 0)) return;
-    rectPainel = {
+    rectPalco = {
       x: Math.round(r.x), y: Math.round(r.y),
       width: Math.round(r.width), height: Math.round(r.height),
     };
     posicionarView();
   });
 
+  // tocando: pisca na barra de tarefas e avisa pelo Windows se a janela
+  // não está na frente (o som quem faz é a casa)
+  ipcMain.on('tocar', (ev, ligado, quem) => {
+    if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return;
+    janelaPrincipal.flashFrame(!!ligado);
+    if (ligado && !janelaPrincipal.isFocused()) notificar('Bigas Voice', (quem || 'Alguém') + ' está te chamando');
+  });
+  ipcMain.on('notificar', (ev, titulo, texto) => {
+    if (janelaPrincipal && janelaPrincipal.isFocused() && janelaPrincipal.isVisible()) return;
+    notificar(String(titulo || 'Bigas Voice').slice(0, 60), String(texto || '').slice(0, 200));
+  });
+
   ipcMain.handle('app:versao', () => app.getVersion());
+  ipcMain.handle('config:ler', () => config);
+  ipcMain.handle('config:mudar', (ev, mudancas) => {
+    const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo'];
+    for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
+    guardarConfig();
+    aplicarConfig();
+    return config;
+  });
 }
 
 /* ---------------------------------------------------------------------
@@ -402,6 +530,7 @@ function ligarSeletorDeTela(){
       minimizable: false,
       maximizable: false,
       title: 'Escolha o que compartilhar — Bigas Voice',
+      icon: ICONE,
       backgroundColor: '#121419',
       autoHideMenuBar: true,
       webPreferences: {
@@ -474,22 +603,33 @@ function ligarVerificacaoManual(){
   ipcMain.on('atualizar:verificar', () => {
     autoUpdater.checkForUpdates().catch(() => transmitirEstadoAtualizacao('erro'));
   });
-  ipcMain.on('atualizar:instalar', () => autoUpdater.quitAndInstall());
+  ipcMain.on('atualizar:instalar', () => { saindoDeVerdade = true; autoUpdater.quitAndInstall(); });
 }
 
 /* ------------------------------------------------------------------ */
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(null);
-  ligarPermissoes();
-  ligarSeletorDeTela();
-  ligarChamadas();
-  ligarVerificacaoManual();
-  criarJanelaPrincipal();
-  ligarAtualizacaoAutomatica();
+// uma instância só: abrir de novo traz a janela que já existe pra frente
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', mostrarJanela);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) criarJanelaPrincipal();
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null);
+    lerConfig();
+    ligarPermissoes();
+    ligarSeletorDeTela();
+    ligarChamadas();
+    ligarVerificacaoManual();
+    criarJanelaPrincipal();
+    aplicarConfig();
+    ligarAtualizacaoAutomatica();
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) criarJanelaPrincipal();
+    });
   });
-});
 
-app.on('window-all-closed', () => app.quit());
+  app.on('before-quit', () => { saindoDeVerdade = true; });
+  app.on('will-quit', () => { globalShortcut.unregisterAll(); });
+  app.on('window-all-closed', () => app.quit());
+}

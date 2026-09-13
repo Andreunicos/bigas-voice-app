@@ -2,32 +2,70 @@
 // Cole isto em: Firebase Console › Firestore Database › Regras › Publicar.
 // É ISTO que protege os dados — a chave dentro do home.js não é segredo.
 //
-// usuarios/{uid}            nick, nickBusca, ultimoVisto, emChamada
-// usuarios/{uid}/amigos/…   lista de amigos (só o dono mexe)
-// convites/{id}             de, deNick, para, paraNick, link, estado, quando
-//                           estado: chamando → aceita | recusada | encerrada | semResposta
+// usuarios/{uid}                nick, nickBusca, ultimoVisto, emChamada
+// usuarios/{uid}/amigos/{outro} amizade ACEITA (cada lado guarda o seu)
+// usuarios/{uid}/bloqueados/…   quem eu bloqueei (só eu vejo)
+// pedidos/{id}                  pedido de amizade: de, deNick, para, paraNick,
+//                               estado: pendente → aceito | recusado | concluido
+// convites/{id}                 chamada tocando: de, deNick, para, paraNick, link,
+//                               estado: chamando → aceita | recusada | encerrada | semResposta
+// conversas/{a_b}/mensagens/…   chat entre dois amigos (a_b = os dois uids em ordem)
 
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function logado() { return request.auth != null; }
+    function eu() { return request.auth.uid; }
+    function souAmigoDe(outro) {
+      // o OUTRO me tem na lista dele = ele aceitou minha amizade
+      return exists(/databases/$(database)/documents/usuarios/$(outro)/amigos/$(eu()));
+    }
+    function meBloqueou(outro) {
+      return exists(/databases/$(database)/documents/usuarios/$(outro)/bloqueados/$(eu()));
+    }
+
     match /usuarios/{uid} {
-      // qualquer conta logada pode LER (é assim que se acha alguém pelo nick
-      // e se vê quem está online); só o dono escreve no próprio perfil
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if logado();
+      allow write: if logado() && eu() == uid;
 
       match /amigos/{amigoId} {
-        allow read, write: if request.auth != null && request.auth.uid == uid;
+        allow read, write: if logado() && eu() == uid;
+      }
+      match /bloqueados/{outroId} {
+        allow read, write: if logado() && eu() == uid;
       }
     }
 
+    match /pedidos/{pedidoId} {
+      allow create: if logado()
+        && request.resource.data.de == eu()
+        && request.resource.data.para != eu()
+        && request.resource.data.estado == 'pendente'
+        && !meBloqueou(request.resource.data.para);
+      allow read, update: if logado()
+        && (resource.data.de == eu() || resource.data.para == eu());
+    }
+
     match /convites/{conviteId} {
-      // só crio convite em meu próprio nome
-      allow create: if request.auth != null && request.auth.uid == request.resource.data.de;
-      // só quem chamou e quem foi chamado enxergam e mexem no convite
-      allow read, update: if request.auth != null &&
-        (request.auth.uid == resource.data.de || request.auth.uid == resource.data.para);
+      // só toca pra quem me tem como amigo — o servidor garante, não o app
+      allow create: if logado()
+        && request.resource.data.de == eu()
+        && request.resource.data.para != eu()
+        && souAmigoDe(request.resource.data.para)
+        && !meBloqueou(request.resource.data.para);
+      allow read, update: if logado()
+        && (resource.data.de == eu() || resource.data.para == eu());
+    }
+
+    match /conversas/{conversaId}/mensagens/{mensagemId} {
+      allow read: if logado() && conversaId.split('_').hasAny([eu()]);
+      allow create: if logado()
+        && conversaId.split('_').hasAny([eu()])
+        && request.resource.data.de == eu()
+        && request.resource.data.texto is string
+        && request.resource.data.texto.size() > 0
+        && request.resource.data.texto.size() <= 2000;
     }
   }
 }

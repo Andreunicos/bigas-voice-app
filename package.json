@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",
@@ -8,7 +8,8 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --publish never",
-    "publicar": "electron-builder --publish always"
+    "publicar": "electron-builder --publish always",
+    "test": "node teste.js"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
@@ -29,10 +30,12 @@
       "home.html",
       "home.js",
       "seletor-de-tela.html",
-      "seletor-de-tela.js"
+      "seletor-de-tela.js",
+      "icone.png"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": true,

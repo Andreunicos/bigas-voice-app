@@ -1,11 +1,11 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  onAuthStateChanged, signOut,
+  onAuthStateChanged, signOut, sendPasswordResetEmail,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, query, where,
-  getDocs, onSnapshot, addDoc, serverTimestamp, limit,
+  getDocs, onSnapshot, addDoc, serverTimestamp, limit, orderBy,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
 /* A chave aqui embaixo NÃO é segredo — quem trava o acesso de verdade são
@@ -22,6 +22,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+window.__bigasPronto = true; // o aviso de "sem internet" olha isto
 
 const $ = (id) => document.getElementById(id);
 const ponte = window.bigasHome;
@@ -32,33 +33,59 @@ const ESPERA_ATENDER_MS = 45 * 1000;
 // presença: batida a cada 40 s; sem batida por 100 s = offline
 const BATIDA_MS = 40 * 1000;
 const OFFLINE_APOS_MS = 100 * 1000;
+// chamadas perdidas: guarda uma semana
+const PERDIDA_VALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function nickParaEmail(nick){
   return nick.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') + '@bigasvoice.app';
 }
 function iniciais(nome){ return (nome || '?').slice(0, 2).toUpperCase(); }
+function ms(carimbo){ return carimbo && typeof carimbo.toMillis === 'function' ? carimbo.toMillis() : null; }
+function guardarLocal(chave, valor){ try { localStorage.setItem(chave, JSON.stringify(valor)); } catch {} }
+function lerLocal(chave, padrao){ try { const v = localStorage.getItem(chave); return v == null ? padrao : JSON.parse(v); } catch { return padrao; } }
+function hora(carimbo){
+  const t = ms(carimbo); if (!t) return 'agora';
+  return new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+function dia(carimbo){
+  const t = ms(carimbo); if (!t) return '';
+  const d = new Date(t), hoje = new Date();
+  if (d.toDateString() === hoje.toDateString()) return 'hoje';
+  const ontem = new Date(hoje); ontem.setDate(hoje.getDate() - 1);
+  if (d.toDateString() === ontem.toDateString()) return 'ontem';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+}
 
 /* =====================================================================
  * ESTADO
  * =================================================================== */
-const eu = { uid: null, nick: '' };
-const amigos = new Map();      // uid -> { nick, presenca, parar }
-let pararAmigos = null;
-let pararConvites = null;
-let batida = null;
+const eu = { uid: null, nick: '', email: '' };
+const amigos = new Map();      // uid -> { nick, presenca, parar, pararUltima, ultima, naoLidas }
+const bloqueados = new Set();
+const bloqueadosNick = new Map();
+let pedidosChegando = [];      // docs (para == eu, pendente)
 let convitesChegando = [];     // docs de convite ainda tocando pra mim
+let perdidas = [];             // docs de convite que não atendi
+let paradores = [];            // funções pra desligar listeners no logout
+let batida = null;
+let carregadoEm = Date.now();  // mensagens anteriores a isto não notificam
 
 const call = {
   estado: 'nenhuma',           // nenhuma | conectando | conectada
   com: '',                     // nick de quem está do outro lado
   papel: '',                   // chamando | atendendo
+  link: '',                    // link da sala atual (pra chamar mais gente)
   conviteRef: null,            // meu convite (quando fui eu que chamei)
   pararConvite: null,
   relogio: null,
+  mudo: false, surdo: false,
 };
 
+const chat = { com: null, nick: '', parar: null };
+let config = {};
+
 /* =====================================================================
- * RECADOS
+ * RECADOS E SONS
  * =================================================================== */
 let relogioRecado = null;
 function recado(texto, tom){
@@ -69,47 +96,123 @@ function recado(texto, tom){
   relogioRecado = setTimeout(() => { r.className = 'recado'; }, 3800);
 }
 
+// toque de chamada (quem recebe) e "tu-tu-tu" (quem chama) — sintetizados,
+// sem arquivo de som nenhum
+let audio = null, somRelogio = null, somTipo = '';
+function nota(freq, inicio, dur, ganho){
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = 'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, inicio);
+  g.gain.linearRampToValueAtTime(ganho, inicio + 0.02);
+  g.gain.setValueAtTime(ganho, inicio + dur - 0.05);
+  g.gain.linearRampToValueAtTime(0, inicio + dur);
+  o.connect(g).connect(audio.destination);
+  o.start(inicio); o.stop(inicio + dur);
+}
+function tocarSom(tipo){
+  if (somTipo === tipo) return;
+  pararSom();
+  somTipo = tipo;
+  try { audio = audio || new AudioContext(); if (audio.state === 'suspended') audio.resume(); } catch { return; }
+  const ciclo = () => {
+    const t = audio.currentTime + 0.05;
+    if (tipo === 'chamada') { nota(880, t, 0.16, 0.18); nota(1175, t + 0.2, 0.16, 0.18); nota(880, t + 0.5, 0.16, 0.18); nota(1175, t + 0.7, 0.22, 0.18); }
+    else { nota(440, t, 0.9, 0.06); }
+  };
+  ciclo();
+  somRelogio = setInterval(ciclo, tipo === 'chamada' ? 2200 : 3500);
+}
+function pararSom(){
+  clearInterval(somRelogio); somRelogio = null; somTipo = '';
+}
+
 /* =====================================================================
  * LOGIN / CONTA
  * =================================================================== */
+let criando = false;
+function modoCriar(ligado){
+  criando = ligado;
+  $('caixa-login').classList.toggle('criando', ligado);
+  $('btn-criar').textContent = ligado ? 'Criar a conta' : 'Criar conta';
+  $('btn-entrar').style.display = ligado ? 'none' : '';
+  $('btn-esqueci').style.display = ligado ? 'none' : '';
+  $('btn-voltar-login').style.display = ligado ? '' : 'none';
+  $('rotulo-nick').textContent = ligado ? 'Escolhe um nick' : 'Seu nick';
+  $('nick').placeholder = ligado ? 'ex: BigHouse' : 'nick (ou e-mail, se cadastrou um)';
+  $('erro-login').textContent = '';
+}
 function travarLogin(travado){
   $('btn-entrar').disabled = travado;
   $('btn-criar').disabled = travado;
 }
 
 $('btn-criar').onclick = async () => {
+  if (!criando) { modoCriar(true); $('nick').focus(); return; }
   const nick = $('nick').value.trim();
+  const email = $('email').value.trim().toLowerCase();
   const senha = $('senha').value;
   $('erro-login').textContent = '';
   if (nick.length < 2) { $('erro-login').textContent = 'O nick precisa de pelo menos 2 letras.'; return; }
+  if (nick.length > 18) { $('erro-login').textContent = 'O nick pode ter no máximo 18 letras.'; return; }
   if (!/^[A-Za-z0-9_]+$/.test(nick)) { $('erro-login').textContent = 'Nick só com letras, números e _ (sem espaço).'; return; }
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $('erro-login').textContent = 'Esse e-mail não parece certo.'; return; }
   if (senha.length < 6) { $('erro-login').textContent = 'A senha precisa de pelo menos 6 caracteres.'; return; }
   travarLogin(true);
   try{
-    // nick já existe? (a conta é por e-mail sintético, mas o nick tem que ser único)
+    const emailLogin = email || nickParaEmail(nick);
+    const cred = await createUserWithEmailAndPassword(auth, emailLogin, senha);
+    // nick tem que ser único. Sem e-mail, o próprio e-mail falso já garante
+    // isso; com e-mail de verdade, precisa conferir — e só dá pra ler
+    // "usuarios" depois de logado, por isso a conferência vem DEPOIS de
+    // criar (e desfaz a conta na hora se o nick já tiver dono).
     const q = query(collection(db, 'usuarios'), where('nickBusca', '==', nick.toLowerCase()), limit(1));
-    if (!(await getDocs(q)).empty) { $('erro-login').textContent = 'Esse nick já tem dono. Escolhe outro.'; return; }
-    const cred = await createUserWithEmailAndPassword(auth, nickParaEmail(nick), senha);
+    if (!(await getDocs(q)).empty) {
+      try { await cred.user.delete(); } catch {}
+      $('erro-login').textContent = 'Esse nick já tem dono. Escolhe outro.';
+      return;
+    }
     await setDoc(doc(db, 'usuarios', cred.user.uid), {
       nick, nickBusca: nick.toLowerCase(), criadoEm: serverTimestamp(),
-      ultimoVisto: serverTimestamp(), emChamada: false,
+      ultimoVisto: serverTimestamp(), emChamada: false, temEmail: !!email,
     });
+    // neste PC, entrar pelo nick continua funcionando mesmo com e-mail
+    const mapa = lerLocal('nickParaEmail', {}); mapa[nick.toLowerCase()] = emailLogin; guardarLocal('nickParaEmail', mapa);
   }catch(e){ $('erro-login').textContent = traduzirErro(e); }
   finally{ travarLogin(false); }
 };
+$('btn-voltar-login').onclick = () => modoCriar(false);
 
 $('btn-entrar').onclick = async () => {
-  const nick = $('nick').value.trim();
+  const digitado = $('nick').value.trim();
   const senha = $('senha').value;
   $('erro-login').textContent = '';
-  if (!nick || !senha) { $('erro-login').textContent = 'Preenche o nick e a senha.'; return; }
+  if (!digitado || !senha) { $('erro-login').textContent = 'Preenche o nick e a senha.'; return; }
   travarLogin(true);
-  try{ await signInWithEmailAndPassword(auth, nickParaEmail(nick), senha); }
-  catch(e){ $('erro-login').textContent = traduzirErro(e); }
+  try{
+    let emailLogin;
+    if (digitado.includes('@')) emailLogin = digitado.toLowerCase();
+    else emailLogin = lerLocal('nickParaEmail', {})[digitado.toLowerCase()] || nickParaEmail(digitado);
+    await signInWithEmailAndPassword(auth, emailLogin, senha);
+  }catch(e){ $('erro-login').textContent = traduzirErro(e); }
   finally{ travarLogin(false); }
 };
-$('senha').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('btn-entrar').click(); });
+$('senha').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') (criando ? $('btn-criar') : $('btn-entrar')).click(); });
 $('nick').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('senha').focus(); });
+
+$('btn-esqueci').onclick = async () => {
+  const digitado = $('nick').value.trim();
+  $('erro-login').textContent = '';
+  if (!digitado.includes('@')) {
+    $('erro-login').textContent = 'Recuperar senha só funciona com e-mail: digita o e-mail que você cadastrou no campo de cima. (Conta sem e-mail não tem como recuperar.)';
+    return;
+  }
+  try{
+    await sendPasswordResetEmail(auth, digitado.toLowerCase());
+    $('erro-login').style.color = '#8fe8b3';
+    $('erro-login').textContent = 'Mandei um e-mail com o passo a passo pra trocar a senha.';
+    setTimeout(() => { $('erro-login').style.color = ''; }, 6000);
+  }catch(e){ $('erro-login').textContent = traduzirErro(e); }
+};
 
 $('btn-sair-conta').onclick = async () => {
   if (call.estado !== 'nenhuma') { recado('Sai da chamada antes de sair da conta.', 'mal'); return; }
@@ -119,9 +222,10 @@ $('btn-sair-conta').onclick = async () => {
 
 function traduzirErro(e){
   const c = (e && e.code) || '';
-  if (c.includes('email-already-in-use')) return 'Esse nick já tem conta. Tenta "Entrar" em vez de criar.';
+  if (c.includes('email-already-in-use')) return 'Esse e-mail (ou nick) já tem conta. Tenta "Entrar".';
   if (c.includes('invalid-credential') || c.includes('wrong-password') || c.includes('user-not-found'))
     return 'Nick ou senha errados.';
+  if (c.includes('invalid-email')) return 'Esse e-mail não parece certo.';
   if (c.includes('weak-password')) return 'Senha muito fraca — usa pelo menos 6 caracteres.';
   if (c.includes('network-request-failed')) return 'Sem internet agora. Tenta de novo.';
   if (c.includes('too-many-requests')) return 'Muitas tentativas. Espera um pouco e tenta de novo.';
@@ -136,7 +240,7 @@ onAuthStateChanged(auth, async (usuario) => {
   desligarTudo();
 
   if (!usuario) {
-    eu.uid = null; eu.nick = '';
+    eu.uid = null; eu.nick = ''; eu.email = '';
     $('tela-login').style.display = 'flex';
     $('tela-casa').style.display = 'none';
     $('senha').value = '';
@@ -144,29 +248,45 @@ onAuthStateChanged(auth, async (usuario) => {
   }
 
   eu.uid = usuario.uid;
-  const meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
+  eu.email = (usuario.email || '').endsWith('@bigasvoice.app') ? '' : (usuario.email || '');
+  // conta recém-criada: o perfil é gravado logo DEPOIS do login acontecer —
+  // dá uns segundos pra ele aparecer antes de desistir
+  let meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
+  for (let i = 0; i < 12 && !meuDoc.exists(); i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    if (auth.currentUser !== usuario) return; // já deslogou (ex.: nick repetido, conta desfeita)
+    meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
+  }
   eu.nick = meuDoc.exists() ? meuDoc.data().nick : 'Sem nome';
   $('meu-nick').textContent = eu.nick;
   $('meu-av').textContent = iniciais(eu.nick);
+  $('aj-nick').textContent = eu.nick;
+  $('aj-email').textContent = eu.email ? 'e-mail de recuperação: ' + eu.email : 'sem e-mail de recuperação';
 
   $('tela-login').style.display = 'none';
   $('tela-casa').style.display = 'flex';
-  mandarRectDoPainel();
+  carregadoEm = Date.now();
+  mandarRectDoPalco();
 
   ligarPresenca();
+  ouvirBloqueados();
   ouvirAmigos();
+  ouvirPedidos();
   ouvirConvites();
+  ouvirPerdidas();
 });
 
 function desligarTudo(){
-  if (pararConvites) { pararConvites(); pararConvites = null; }
-  if (pararAmigos) { pararAmigos(); pararAmigos = null; }
-  amigos.forEach((a) => { if (a.parar) a.parar(); });
+  paradores.forEach((p) => { try { p(); } catch {} });
+  paradores = [];
+  amigos.forEach((a) => { if (a.parar) a.parar(); if (a.pararUltima) a.pararUltima(); });
   amigos.clear();
+  bloqueados.clear();
   clearInterval(batida); batida = null;
-  convitesChegando = [];
-  pintarConvite();
-  pintarAmigos();
+  pedidosChegando = []; convitesChegando = []; perdidas = [];
+  fecharChat(); fecharLateral();
+  pararSom();
+  pintarConvite(); pintarPedidos(); pintarPerdidas(); pintarAmigos();
 }
 
 /* =====================================================================
@@ -190,59 +310,188 @@ setInterval(pintarConvite, 5 * 1000);
 
 function presencaDe(a){
   const p = a.presenca;
-  if (!p || !p.ultimoVisto || typeof p.ultimoVisto.toMillis !== 'function') return 'offline';
-  if (Date.now() - p.ultimoVisto.toMillis() > OFFLINE_APOS_MS) return 'offline';
+  const t = p && ms(p.ultimoVisto);
+  if (!t) return 'offline';
+  if (Date.now() - t > OFFLINE_APOS_MS) return 'offline';
   return p.emChamada ? 'emcall' : 'online';
 }
 
 /* =====================================================================
- * AMIGOS
+ * BLOQUEADOS
  * =================================================================== */
-$('btn-add').onclick = adicionarAmigo;
-$('add-nick').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') adicionarAmigo(); });
+function ouvirBloqueados(){
+  paradores.push(onSnapshot(collection(db, 'usuarios', eu.uid, 'bloqueados'), (snap) => {
+    bloqueados.clear(); bloqueadosNick.clear();
+    snap.forEach((d) => { bloqueados.add(d.id); bloqueadosNick.set(d.id, d.data().nick || ''); });
+    pintarPedidos(); pintarConvite(); pintarPerdidas(); pintarBloqueados();
+  }, () => {}));
+}
+async function bloquear(uid, nick){
+  if (!confirm('Bloquear ' + nick + '? Ele sai da sua lista e não consegue mais te chamar nem te mandar pedido.')) return;
+  try{
+    await setDoc(doc(db, 'usuarios', eu.uid, 'bloqueados', uid), { nick, quando: serverTimestamp() });
+    await deleteDoc(doc(db, 'usuarios', eu.uid, 'amigos', uid)).catch(() => {});
+    if (chat.com === uid) fecharChat();
+    recado(nick + ' foi bloqueado.', '');
+  }catch(e){ recado('Não consegui bloquear agora.', 'mal'); }
+}
+async function desbloquear(uid){
+  try{ await deleteDoc(doc(db, 'usuarios', eu.uid, 'bloqueados', uid)); }catch{}
+}
+function pintarBloqueados(){
+  const caixa = $('lista-bloqueados'); if (!caixa) return;
+  caixa.innerHTML = '';
+  if (!bloqueados.size) { caixa.innerHTML = '<small style="color:var(--txt3)">ninguém bloqueado</small>'; return; }
+  bloqueados.forEach((uid) => {
+    const linha = document.createElement('div'); linha.className = 'ajuste';
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const b = document.createElement('b'); b.textContent = bloqueadosNick.get(uid) || uid.slice(0, 8);
+    txt.appendChild(b);
+    const btn = document.createElement('button'); btn.className = 'link'; btn.textContent = 'desbloquear';
+    btn.onclick = () => desbloquear(uid);
+    linha.append(txt, btn); caixa.appendChild(linha);
+  });
+}
 
-async function adicionarAmigo(){
+/* =====================================================================
+ * AMIGOS — pedido, aceite, lista
+ * =================================================================== */
+$('btn-add').onclick = mandarPedido;
+$('add-nick').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') mandarPedido(); });
+
+function avisoAdd(texto, bem){
+  const e = $('erro-add'); e.textContent = texto; e.classList.toggle('bem', !!bem);
+  if (bem) setTimeout(() => { if (e.textContent === texto) e.textContent = ''; }, 4000);
+}
+
+async function mandarPedido(){
   const nickBuscado = $('add-nick').value.trim();
-  $('erro-add').textContent = '';
+  avisoAdd('');
   if (!nickBuscado) return;
   $('btn-add').disabled = true;
   try{
     const q = query(collection(db, 'usuarios'), where('nickBusca', '==', nickBuscado.toLowerCase()), limit(1));
     const achou = await getDocs(q);
-    if (achou.empty) { $('erro-add').textContent = 'Não achei ninguém com esse nick.'; return; }
-    const amigoDoc = achou.docs[0];
-    if (amigoDoc.id === eu.uid) { $('erro-add').textContent = 'Esse nick é o seu.'; return; }
-    if (amigos.has(amigoDoc.id)) { $('erro-add').textContent = amigoDoc.data().nick + ' já está na sua lista.'; return; }
-    await setDoc(doc(db, 'usuarios', eu.uid, 'amigos', amigoDoc.id), {
-      nick: amigoDoc.data().nick, desde: serverTimestamp(),
+    if (achou.empty) { avisoAdd('Não achei ninguém com esse nick.'); return; }
+    const outro = achou.docs[0];
+    if (outro.id === eu.uid) { avisoAdd('Esse nick é o seu.'); return; }
+    // (se ele já está na SUA lista mas você não na dele — coisa das versões
+    // antigas, que só gravavam um lado — o pedido completa o outro lado)
+    if (bloqueados.has(outro.id)) { avisoAdd('Você bloqueou ' + outro.data().nick + '. Desbloqueia nos ajustes primeiro.'); return; }
+    // ele já me pediu? então é só aceitar
+    const jaPediu = pedidosChegando.find((d) => d.data().de === outro.id);
+    if (jaPediu) { await aceitarPedido(jaPediu); avisoAdd(outro.data().nick + ' já tinha te pedido — virou amigo agora.', true); $('add-nick').value = ''; return; }
+    // eu já pedi e está pendente?
+    const meus = await getDocs(query(collection(db, 'pedidos'), where('de', '==', eu.uid), where('para', '==', outro.id), where('estado', '==', 'pendente'), limit(1)));
+    if (!meus.empty) { avisoAdd('Você já pediu — ' + outro.data().nick + ' ainda não respondeu.'); return; }
+    await addDoc(collection(db, 'pedidos'), {
+      de: eu.uid, deNick: eu.nick, para: outro.id, paraNick: outro.data().nick,
+      estado: 'pendente', quando: serverTimestamp(),
     });
     $('add-nick').value = '';
-    recado(amigoDoc.data().nick + ' entrou na sua lista.', 'bem');
+    avisoAdd('Pedido enviado pra ' + outro.data().nick + '. Quando ele aceitar, aparece na lista.', true);
   }catch(e){
     console.error(e);
-    $('erro-add').textContent = traduzirErro(e);
+    avisoAdd(e && e.code === 'permission-denied' ? 'Essa pessoa te bloqueou.' : traduzirErro(e));
   }finally{ $('btn-add').disabled = false; }
 }
 
+function ouvirPedidos(){
+  // pedidos PRA MIM, pendentes
+  paradores.push(onSnapshot(query(collection(db, 'pedidos'), where('para', '==', eu.uid), where('estado', '==', 'pendente')), (snap) => {
+    const antes = new Set(pedidosChegando.map((d) => d.id));
+    pedidosChegando = snap.docs;
+    pintarPedidos();
+    snap.docs.forEach((d) => {
+      const c = d.data();
+      if (!antes.has(d.id) && (ms(c.quando) || Date.now()) > carregadoEm && !bloqueados.has(c.de))
+        ponte.notificar('Pedido de amizade', c.deNick + ' quer ser seu amigo');
+    });
+  }, (e) => console.error(e)));
+
+  // pedidos MEUS que foram aceitos: eu completo o meu lado da amizade
+  paradores.push(onSnapshot(query(collection(db, 'pedidos'), where('de', '==', eu.uid), where('estado', '==', 'aceito')), (snap) => {
+    snap.docs.forEach(async (d) => {
+      const c = d.data();
+      try{
+        await setDoc(doc(db, 'usuarios', eu.uid, 'amigos', c.para), { nick: c.paraNick, desde: serverTimestamp() });
+        await updateDoc(d.ref, { estado: 'concluido' });
+        recado(c.paraNick + ' aceitou sua amizade!', 'bem');
+        ponte.notificar('Bigas Voice', c.paraNick + ' aceitou sua amizade');
+      }catch(e){ console.error(e); }
+    });
+  }, (e) => console.error(e)));
+}
+
+async function aceitarPedido(d){
+  const c = d.data();
+  await setDoc(doc(db, 'usuarios', eu.uid, 'amigos', c.de), { nick: c.deNick, desde: serverTimestamp() });
+  await updateDoc(d.ref, { estado: 'aceito' });
+}
+async function recusarPedido(d){
+  await updateDoc(d.ref, { estado: 'recusado' });
+}
+
+function pintarPedidos(){
+  const vivos = pedidosChegando.filter((d) => !bloqueados.has(d.data().de));
+  $('bloco-pedidos').hidden = !vivos.length;
+  $('bolinha-pedidos').hidden = !vivos.length;
+  $('bolinha-pedidos').textContent = String(vivos.length);
+  const caixa = $('pedidos'); caixa.innerHTML = '';
+  vivos.forEach((d) => {
+    const c = d.data();
+    const el = document.createElement('div'); el.className = 'cartinha';
+    const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(c.deNick);
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const b = document.createElement('b'); b.textContent = c.deNick;
+    const s = document.createElement('small'); s.textContent = 'quer ser seu amigo';
+    txt.append(b, s);
+    const sim = document.createElement('button'); sim.className = 'sim'; sim.textContent = '✓'; sim.title = 'Aceitar';
+    sim.onclick = async () => { sim.disabled = true; try { await aceitarPedido(d); recado(c.deNick + ' agora é seu amigo.', 'bem'); } catch (e) { recado('Não consegui aceitar.', 'mal'); sim.disabled = false; } };
+    const nao = document.createElement('button'); nao.className = 'nao'; nao.textContent = '×'; nao.title = 'Recusar';
+    nao.onclick = async () => { nao.disabled = true; try { await recusarPedido(d); } catch { nao.disabled = false; } };
+    el.append(av, txt, sim, nao);
+    caixa.appendChild(el);
+  });
+}
+
 async function tirarAmigo(uid, nick){
-  if (!confirm('Tirar ' + nick + ' da sua lista?')) return;
-  try{ await deleteDoc(doc(db, 'usuarios', eu.uid, 'amigos', uid)); }
-  catch(e){ recado('Não consegui tirar agora.', 'mal'); }
+  if (!confirm('Tirar ' + nick + ' da sua lista? Ele também vai deixar de te ver como amigo.')) return;
+  try{
+    await deleteDoc(doc(db, 'usuarios', eu.uid, 'amigos', uid));
+    if (chat.com === uid) fecharChat();
+  }catch(e){ recado('Não consegui tirar agora.', 'mal'); }
 }
 
 function ouvirAmigos(){
-  const ref = collection(db, 'usuarios', eu.uid, 'amigos');
-  pararAmigos = onSnapshot(ref, (snap) => {
+  paradores.push(onSnapshot(collection(db, 'usuarios', eu.uid, 'amigos'), (snap) => {
     const vivos = new Set();
     snap.forEach((d) => {
       vivos.add(d.id);
       let a = amigos.get(d.id);
       if (!a) {
-        a = { nick: d.data().nick, presenca: null, parar: null };
+        a = { nick: d.data().nick, presenca: null, parar: null, pararUltima: null, ultima: null, naoLidas: 0, avisou: null };
         // cada amigo tem o próprio "olho": online / em chamada, ao vivo
         a.parar = onSnapshot(doc(db, 'usuarios', d.id), (u) => {
           a.presenca = u.exists() ? u.data() : null;
           if (u.exists() && u.data().nick) a.nick = u.data().nick;
+          pintarAmigos();
+        }, () => {});
+        // e a última mensagem da conversa (pra bolinha de não lida)
+        a.pararUltima = onSnapshot(query(collection(db, 'conversas', idConversa(d.id), 'mensagens'), orderBy('quando', 'desc'), limit(1)), (s) => {
+          const m = s.docs[0];
+          a.ultima = m ? Object.assign({ id: m.id }, m.data()) : null;
+          if (m && m.data().de !== eu.uid) {
+            const t = ms(m.data().quando) || Date.now();
+            if (chat.com === d.id) marcarLido(d.id, t);
+            else {
+              a.naoLidas = t > lidoAte(d.id) ? 1 : 0;
+              if (t > carregadoEm && t > lidoAte(d.id) && a.avisou !== m.id) {
+                a.avisou = m.id;
+                ponte.notificar(a.nick, String(m.data().texto || '').slice(0, 120));
+              }
+            }
+          } else a.naoLidas = 0;
           pintarAmigos();
         }, () => {});
         amigos.set(d.id, a);
@@ -250,9 +499,9 @@ function ouvirAmigos(){
         a.nick = d.data().nick || a.nick;
       }
     });
-    amigos.forEach((a, id) => { if (!vivos.has(id)) { if (a.parar) a.parar(); amigos.delete(id); } });
+    amigos.forEach((a, id) => { if (!vivos.has(id)) { if (a.parar) a.parar(); if (a.pararUltima) a.pararUltima(); amigos.delete(id); if (chat.com === id) fecharChat(); } });
     pintarAmigos();
-  }, (e) => { console.error(e); recado('Não consegui carregar seus amigos.', 'mal'); });
+  }, (e) => { console.error(e); recado('Não consegui carregar seus amigos.', 'mal'); }));
 }
 
 function pintarAmigos(){
@@ -260,48 +509,154 @@ function pintarAmigos(){
   if (!lista) return;
   $('titulo-lista').textContent = amigos.size ? 'Amigos — ' + amigos.size : 'Amigos';
   if (!amigos.size) {
-    lista.innerHTML = '<p class="vazio">Ninguém na lista ainda.<br>Adiciona um amigo pelo nick aí em cima — ele precisa ter conta no Bigas Voice.</p>';
+    lista.innerHTML = '<p class="vazio">Ninguém na lista ainda.<br>Manda um pedido pelo nick aí em cima — quando a pessoa aceitar, ela aparece aqui.</p>';
     return;
   }
   const ordem = { emcall: 0, online: 0, offline: 1 };
   const entradas = [...amigos.entries()]
     .map(([id, a]) => ({ id, a, p: presencaDe(a) }))
-    .sort((x, y) => (ordem[x.p] - ordem[y.p]) || x.a.nick.localeCompare(y.a.nick));
+    .sort((x, y) => (ordem[x.p] - ordem[y.p]) || (y.a.naoLidas - x.a.naoLidas) || x.a.nick.localeCompare(y.a.nick));
 
   lista.innerHTML = '';
   for (const { id, a, p } of entradas) {
     const linha = document.createElement('div');
-    linha.className = 'amigo ' + p;
+    linha.className = 'amigo ' + p + (chat.com === id ? ' aberto' : '');
+    linha.onclick = () => abrirChat(id, a.nick);
+    linha.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuAmigo(id, a.nick, ev.clientX, ev.clientY); };
 
     const av = document.createElement('div'); av.className = 'avatar';
     av.textContent = iniciais(a.nick);
     const luz = document.createElement('span'); luz.className = 'luz'; av.appendChild(luz);
 
     const txt = document.createElement('div'); txt.className = 'txt';
-    const nome = document.createElement('div'); nome.className = 'nome'; nome.textContent = a.nick;
+    const nome = document.createElement('div'); nome.className = 'nome';
+    nome.textContent = a.nick;
+    if (a.naoLidas) { const b = document.createElement('span'); b.className = 'bolinha'; b.textContent = '●'; b.title = 'mensagem nova'; nome.appendChild(b); }
     const estado = document.createElement('div'); estado.className = 'estado';
-    estado.textContent = p === 'emcall' ? 'em chamada' : p === 'online' ? 'online' : 'offline';
+    estado.textContent = a.ultima && a.naoLidas ? String(a.ultima.texto || '').slice(0, 40)
+      : p === 'emcall' ? 'em chamada' : p === 'online' ? 'online' : 'offline';
     txt.append(nome, estado);
 
     const acoes = document.createElement('div'); acoes.className = 'acoes';
     const chamar = document.createElement('button');
-    chamar.type = 'button'; chamar.className = 'chamar'; chamar.textContent = '📞';
-    chamar.title = 'Chamar ' + a.nick;
-    if (call.estado !== 'nenhuma') { chamar.disabled = true; chamar.title = 'Você já está numa chamada'; }
-    chamar.onclick = () => chamarAmigo(id, a.nick);
-    const tirar = document.createElement('button');
-    tirar.type = 'button'; tirar.className = 'tirar'; tirar.textContent = '×';
-    tirar.title = 'Tirar da lista';
-    tirar.onclick = () => tirarAmigo(id, a.nick);
-    acoes.append(chamar, tirar);
+    chamar.type = 'button'; chamar.className = 'chamar';
+    const naCall = call.estado !== 'nenhuma';
+    chamar.textContent = naCall ? '➕' : '📞';
+    chamar.title = naCall ? 'Trazer ' + a.nick + ' pra esta chamada' : 'Chamar ' + a.nick;
+    if (naCall && !call.link) { chamar.disabled = true; chamar.title = 'Espera a chamada abrir'; }
+    chamar.onclick = (ev) => { ev.stopPropagation(); if (naCall) chamarParaCall(id, a.nick); else chamarAmigo(id, a.nick); };
+    const mais = document.createElement('button');
+    mais.type = 'button'; mais.className = 'mais'; mais.textContent = '⋯'; mais.title = 'Mais';
+    mais.onclick = (ev) => { ev.stopPropagation(); const r = mais.getBoundingClientRect(); abrirMenuAmigo(id, a.nick, r.left, r.bottom + 4); };
+    acoes.append(chamar, mais);
 
     linha.append(av, txt, acoes);
     lista.appendChild(linha);
   }
 }
 
+/* menu do amigo (botão direito ou ⋯) */
+function abrirMenuAmigo(uid, nick, x, y){
+  const m = $('menu-amigo');
+  m.innerHTML = '';
+  const item = (rotulo, fn, perigo) => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo;
+    if (perigo) b.className = 'perigo';
+    b.onclick = () => { fecharMenuAmigo(); fn(); };
+    m.appendChild(b);
+  };
+  item('💬 Conversar', () => abrirChat(uid, nick));
+  if (call.estado !== 'nenhuma') item('➕ Trazer pra esta chamada', () => chamarParaCall(uid, nick));
+  else item('📞 Chamar', () => chamarAmigo(uid, nick));
+  item('Tirar da lista', () => tirarAmigo(uid, nick));
+  item('🚫 Bloquear', () => bloquear(uid, nick), true);
+  m.classList.add('mostra');
+  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
+  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
+}
+function fecharMenuAmigo(){ $('menu-amigo').classList.remove('mostra'); }
+window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') fecharMenuAmigo(); });
+
 /* =====================================================================
- * CHAMAR — a call abre AQUI no painel; o link fica só no convite
+ * CHAT (conversa por amigo, com histórico)
+ * =================================================================== */
+function idConversa(outro){ return [eu.uid, outro].sort().join('_'); }
+function lidoAte(uid){ return Number(lerLocal('lido:' + eu.uid + ':' + uid, 0)) || 0; }
+function marcarLido(uid, t){
+  guardarLocal('lido:' + eu.uid + ':' + uid, Math.max(lidoAte(uid), t || Date.now()));
+  const a = amigos.get(uid); if (a) a.naoLidas = 0;
+}
+
+function abrirChat(uid, nick){
+  if (chat.parar) { chat.parar(); chat.parar = null; }
+  chat.com = uid; chat.nick = nick;
+  $('chat-nick').textContent = nick;
+  $('chat-av').textContent = iniciais(nick);
+  $('mensagens').innerHTML = '<p class="vazio">Carregando…</p>';
+  mostrarLateral('sec-chat');
+  marcarLido(uid, Date.now());
+  pintarAmigos();
+  const ref = query(collection(db, 'conversas', idConversa(uid), 'mensagens'), orderBy('quando', 'desc'), limit(200));
+  chat.parar = onSnapshot(ref, (snap) => {
+    const caixa = $('mensagens');
+    const estavaEmbaixo = caixa.scrollTop + caixa.clientHeight >= caixa.scrollHeight - 40;
+    caixa.innerHTML = '';
+    // mensagem recém-enviada ainda não tem carimbo do servidor: usa a
+    // estimativa local pra ela não pular pro topo enquanto o servidor responde
+    const docs = snap.docs.map((d) => d.data({ serverTimestamps: 'estimate' }))
+      .sort((a, b) => (ms(a.quando) || 0) - (ms(b.quando) || 0));
+    if (!docs.length) caixa.innerHTML = '<p class="vazio">Nenhuma mensagem ainda. Manda um oi.</p>';
+    let diaAnterior = '';
+    docs.forEach((m) => {
+      const dd = dia(m.quando) || 'agora';
+      if (dd !== diaAnterior) { const s = document.createElement('div'); s.className = 'msg dia'; s.textContent = dd; caixa.appendChild(s); diaAnterior = dd; }
+      const el = document.createElement('div'); el.className = 'msg' + (m.de === eu.uid ? ' minha' : '');
+      const t = document.createElement('div'); t.className = 'texto'; t.textContent = m.texto || '';
+      const h = document.createElement('div'); h.className = 'hora'; h.textContent = hora(m.quando);
+      el.append(t, h); caixa.appendChild(el);
+    });
+    if (estavaEmbaixo || snap.docChanges().some((c) => c.type === 'added')) caixa.scrollTop = caixa.scrollHeight;
+    marcarLido(uid, Date.now());
+  }, (e) => { console.error(e); $('mensagens').innerHTML = '<p class="vazio">Não consegui abrir a conversa (' + (e.code || 'erro') + ').</p>'; });
+  setTimeout(() => $('chat-texto').focus(), 50);
+}
+function fecharChat(){
+  if (chat.parar) { chat.parar(); chat.parar = null; }
+  chat.com = null; chat.nick = '';
+  if ($('sec-chat').classList.contains('mostra')) fecharLateral();
+  pintarAmigos();
+}
+$('btn-fechar-chat').onclick = fecharChat;
+
+async function enviarMensagem(){
+  const texto = $('chat-texto').value.trim();
+  if (!texto || !chat.com) return;
+  $('chat-texto').value = ''; ajustarAltura();
+  try{
+    await addDoc(collection(db, 'conversas', idConversa(chat.com), 'mensagens'), { de: eu.uid, texto, quando: serverTimestamp() });
+  }catch(e){ console.error(e); recado('A mensagem não foi (' + (e.code || 'erro') + ').', 'mal'); $('chat-texto').value = texto; }
+}
+$('btn-enviar').onclick = enviarMensagem;
+$('chat-texto').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); enviarMensagem(); }
+});
+function ajustarAltura(){ const t = $('chat-texto'); t.style.height = 'auto'; t.style.height = Math.min(120, t.scrollHeight) + 'px'; }
+$('chat-texto').addEventListener('input', ajustarAltura);
+
+/* lateral: chat OU ajustes */
+function mostrarLateral(qual){
+  $('lateral').classList.add('mostra');
+  ['sec-chat', 'sec-ajustes'].forEach((id) => $(id).classList.toggle('mostra', id === qual));
+  mandarRectDoPalco();
+}
+function fecharLateral(){
+  $('lateral').classList.remove('mostra');
+  mandarRectDoPalco();
+}
+
+/* =====================================================================
+ * CHAMAR — a call abre no palco; o link fica só no convite
  * =================================================================== */
 async function chamarAmigo(amigoUid, amigoNick){
   if (call.estado !== 'nenhuma') { recado('Você já está numa chamada.', 'mal'); return; }
@@ -316,26 +671,53 @@ async function chamarAmigo(amigoUid, amigoNick){
       return;
     }
     if (call.estado === 'nenhuma') return; // desistiu no meio
-    const ref = await addDoc(collection(db, 'convites'), {
-      de: eu.uid, deNick: eu.nick, para: amigoUid, paraNick: amigoNick,
-      link, estado: 'chamando', quando: serverTimestamp(),
-    });
-    call.conviteRef = ref;
-    bater();
+    call.link = link;
+    pintarAmigos();
+    await mandarConvite(amigoUid, amigoNick, link, true);
+  }catch(e){
+    console.error(e);
+    if (e && e.code === 'permission-denied') {
+      // o servidor só deixa ligar pra quem TE TEM como amigo. Ele ainda não
+      // tem (amizade antiga, de um lado só): manda o pedido e explica.
+      recado(amigoNick + ' ainda não te tem como amigo — mandei um pedido; quando ele aceitar, a chamada funciona.', 'mal');
+      addDoc(collection(db, 'pedidos'), { de: eu.uid, deNick: eu.nick, para: amigoUid, paraNick: amigoNick, estado: 'pendente', quando: serverTimestamp() }).catch(() => {});
+    } else {
+      recado('Deu erro ao chamar: ' + traduzirErro(e), 'mal');
+    }
+    sairDaCall();
+  }
+}
 
+// já numa call: chama mais um pra MESMA sala (o site é um mesh de até 6)
+async function chamarParaCall(amigoUid, amigoNick){
+  if (call.estado === 'nenhuma' || !call.link) { recado('Abre uma chamada primeiro.', 'mal'); return; }
+  try{
+    await mandarConvite(amigoUid, amigoNick, call.link, false);
+    recado('Chamando ' + amigoNick + ' pra esta chamada…', 'bem');
+  }catch(e){ recado('Não consegui chamar ' + amigoNick + ': ' + traduzirErro(e), 'mal'); }
+}
+
+async function mandarConvite(amigoUid, amigoNick, link, principal){
+  const ref = await addDoc(collection(db, 'convites'), {
+    de: eu.uid, deNick: eu.nick, para: amigoUid, paraNick: amigoNick,
+    link, estado: 'chamando', quando: serverTimestamp(),
+  });
+  bater();
+  if (principal) {
+    call.conviteRef = ref;
+    tocarSom('chamando');
     // ouve a resposta dele: atendeu / recusou
     call.pararConvite = onSnapshot(ref, (d) => {
       if (!d.exists() || call.conviteRef !== ref) return;
       const c = d.data();
       if (c.estado === 'aceita') {
-        clearTimeout(call.relogio); call.relogio = null;
+        clearTimeout(call.relogio); call.relogio = null; pararSom();
         $('call-sub').textContent = amigoNick + ' atendeu — conectando…';
       } else if (c.estado === 'recusada') {
         recado(amigoNick + ' recusou a chamada.', 'mal');
         sairDaCall();
       }
     });
-
     // ninguém atende pra sempre
     call.relogio = setTimeout(async () => {
       if (call.conviteRef !== ref || call.estado === 'conectada') return;
@@ -343,20 +725,23 @@ async function chamarAmigo(amigoUid, amigoNick){
       recado(amigoNick + ' não atendeu.', 'mal');
       sairDaCall();
     }, ESPERA_ATENDER_MS);
-  }catch(e){
-    console.error(e);
-    recado('Deu erro ao chamar: ' + traduzirErro(e), 'mal');
-    sairDaCall();
+  } else {
+    // convidado extra: se ninguém atender, o convite só para de tocar
+    setTimeout(async () => {
+      try{ const d = await getDoc(ref); if (d.exists() && d.data().estado === 'chamando') await updateDoc(ref, { estado: 'semResposta' }); }catch{}
+    }, ESPERA_ATENDER_MS);
   }
 }
 
 function entrarEmEstado(estado, com, papel){
   call.estado = estado;
   if (estado === 'nenhuma') {
-    call.com = ''; call.papel = '';
+    call.com = ''; call.papel = ''; call.link = '';
+    call.mudo = false; call.surdo = false;
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
     call.conviteRef = null;
+    pararSom();
   } else {
     if (com !== undefined) call.com = com;
     if (papel !== undefined) call.papel = papel;
@@ -367,9 +752,9 @@ function entrarEmEstado(estado, com, papel){
 
 function pintarCall(){
   const p = $('painel-call');
-  const painel = $('painel');
+  const palco = $('palco');
   p.className = 'painel-call' + (call.estado === 'nenhuma' ? '' : ' tem') + (call.estado === 'conectando' ? ' conectando' : '');
-  painel.classList.toggle('conectando', call.estado === 'conectando');
+  palco.classList.toggle('conectando', call.estado === 'conectando');
   $('call-girando').hidden = call.estado !== 'conectando';
   if (call.estado === 'conectando') {
     $('call-titulo').textContent = call.papel === 'chamando' ? 'Chamando…' : 'Entrando…';
@@ -378,6 +763,12 @@ function pintarCall(){
     $('call-titulo').textContent = '🔊 Em chamada';
     $('call-sub').textContent = 'com ' + call.com;
   }
+  const naCall = call.estado !== 'nenhuma';
+  $('btn-mic').disabled = !naCall; $('btn-surdo').disabled = !naCall;
+  $('btn-mic').classList.toggle('on', naCall && call.mudo);
+  $('btn-surdo').classList.toggle('on', naCall && call.surdo);
+  $('btn-mic').textContent = naCall && call.mudo ? '🔇' : '🎙';
+  $('btn-surdo').textContent = naCall && call.surdo ? '🔕' : '🎧';
 }
 
 async function sairDaCall(){
@@ -394,6 +785,9 @@ async function pararMeuConvite(ref){
 }
 
 $('btn-sair-call').onclick = sairDaCall;
+$('btn-mic').onclick = () => ponte.mic();
+$('btn-surdo').onclick = () => ponte.surdo();
+ponte.aoMudarControles((d) => { call.mudo = !!d.mudo; call.surdo = !!d.surdo; pintarCall(); });
 
 // o processo principal conta o que aconteceu com a call de verdade
 ponte.aoMudarCall(async (d) => {
@@ -401,6 +795,7 @@ ponte.aoMudarCall(async (d) => {
     if (call.estado === 'nenhuma') entrarEmEstado('conectando');
   } else if (d.estado === 'conectada') {
     if (call.estado !== 'nenhuma') entrarEmEstado('conectada');
+    pararSom();
     bater();
   } else if (d.estado === 'encerrada') {
     const ref = call.conviteRef;
@@ -418,26 +813,39 @@ ponte.aoMudarCall(async (d) => {
  * =================================================================== */
 function ouvirConvites(){
   const ref = query(collection(db, 'convites'), where('para', '==', eu.uid), where('estado', '==', 'chamando'));
-  pararConvites = onSnapshot(ref, (snap) => {
+  paradores.push(onSnapshot(ref, (snap) => {
     convitesChegando = snap.docs;
     pintarConvite();
-  }, (e) => { console.error(e); recado('Não consegui ligar o aviso de chamadas.', 'mal'); });
+  }, (e) => { console.error(e); recado('Não consegui ligar o aviso de chamadas.', 'mal'); }));
 }
 
 function conviteVivo(d){
-  const q = d.data().quando;
-  if (!q || typeof q.toMillis !== 'function') return true; // ainda sem carimbo do servidor: acabou de nascer
-  return Date.now() - q.toMillis() < CONVITE_VALE_MS;
+  const c = d.data();
+  if (bloqueados.has(c.de)) return false;
+  const t = ms(c.quando);
+  if (!t) return true; // ainda sem carimbo do servidor: acabou de nascer
+  return Date.now() - t < CONVITE_VALE_MS;
 }
 
+let tocandoId = null;
 function pintarConvite(){
   const caixa = $('convite');
   const vivo = convitesChegando.find(conviteVivo);
-  if (!vivo) { caixa.className = 'convite'; return; }
+  if (!vivo) {
+    caixa.className = 'convite';
+    if (tocandoId) { tocandoId = null; if (somTipo === 'chamada') pararSom(); ponte.tocar(false); }
+    return;
+  }
   const c = vivo.data();
   caixa.className = 'convite tem';
   $('convite-nick').textContent = c.deNick;
   $('convite-av').textContent = iniciais(c.deNick);
+  $('convite-sub').textContent = call.estado !== 'nenhuma' && c.link === call.link ? 'está te chamando (mesma chamada)' : 'está te chamando';
+  if (tocandoId !== vivo.id) {
+    tocandoId = vivo.id;
+    if (call.estado === 'nenhuma') tocarSom('chamada');
+    ponte.tocar(true, c.deNick);
+  }
 
   $('btn-atender').onclick = async () => {
     $('btn-atender').disabled = true; $('btn-recusar').disabled = true;
@@ -446,11 +854,13 @@ function pintarConvite(){
       // já estava numa call? ela dá lugar a esta (o app fecha a antiga
       // sem avisar 'encerrada' — a casa mesma faz a limpeza aqui)
       if (call.estado !== 'nenhuma') {
+        if (c.link === call.link) { recado('Você já está nessa chamada.', ''); return; }
         const antigo = call.conviteRef;
         entrarEmEstado('nenhuma');
         pararMeuConvite(antigo);
       }
       entrarEmEstado('conectando', c.deNick, 'atendendo');
+      call.link = c.link;
       $('conectando-txt').textContent = 'Entrando na chamada de ' + c.deNick + '…';
       const ok = await ponte.entrarComLink(c.link, eu.nick, c.deNick);
       if (!ok) { if (call.estado !== 'nenhuma') entrarEmEstado('nenhuma'); recado('Não consegui entrar na chamada.', 'mal'); }
@@ -464,14 +874,122 @@ function pintarConvite(){
 }
 
 /* =====================================================================
- * O PAINEL: avisa o app onde a call se encaixa
+ * CHAMADAS PERDIDAS
  * =================================================================== */
-function mandarRectDoPainel(){
-  const r = $('painel').getBoundingClientRect();
-  if (r.width > 0 && r.height > 0) ponte.painelMudou({ x: r.left, y: r.top, width: r.width, height: r.height });
+function ouvirPerdidas(){
+  // dois ouvidos (um por estado) em vez de um "in": só igualdade nunca
+  // precisa de índice composto no Firestore
+  const partes = { semResposta: [], encerrada: [] };
+  for (const estado of Object.keys(partes)) {
+    const ref = query(collection(db, 'convites'), where('para', '==', eu.uid), where('estado', '==', estado));
+    paradores.push(onSnapshot(ref, (snap) => {
+      partes[estado] = snap.docs;
+      perdidas = partes.semResposta.concat(partes.encerrada);
+      pintarPerdidas();
+    }, (e) => console.error(e)));
+  }
 }
-new ResizeObserver(mandarRectDoPainel).observe($('painel'));
-window.addEventListener('resize', mandarRectDoPainel);
+function pintarPerdidas(){
+  const vistoAte = Number(lerLocal('perdidasVistoAte:' + eu.uid, 0)) || 0;
+  const agora = Date.now();
+  const vivas = perdidas
+    .map((d) => d.data())
+    .filter((c) => { const t = ms(c.quando); return t && t > vistoAte && agora - t < PERDIDA_VALE_MS && !bloqueados.has(c.de); })
+    .sort((a, b) => ms(b.quando) - ms(a.quando))
+    .slice(0, 8);
+  $('bloco-perdidas').hidden = !vivas.length;
+  const caixa = $('perdidas'); caixa.innerHTML = '';
+  vivas.forEach((c) => {
+    const el = document.createElement('div'); el.className = 'cartinha perdida';
+    const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(c.deNick);
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const b = document.createElement('b'); b.textContent = c.deNick + ' te ligou';
+    const s = document.createElement('small'); s.textContent = dia(c.quando) + ' às ' + hora(c.quando);
+    txt.append(b, s);
+    const voltar = document.createElement('button'); voltar.className = 'sim'; voltar.textContent = '📞'; voltar.title = 'Ligar de volta';
+    voltar.onclick = () => { const a = amigos.get(c.de); if (a) chamarAmigo(c.de, a.nick); else recado(c.deNick + ' não está mais na sua lista.', 'mal'); };
+    el.append(av, txt, voltar);
+    caixa.appendChild(el);
+  });
+}
+$('btn-limpar-perdidas').onclick = () => { guardarLocal('perdidasVistoAte:' + eu.uid, Date.now()); pintarPerdidas(); };
+
+/* =====================================================================
+ * O PALCO: avisa o app onde a call se encaixa
+ * =================================================================== */
+function mandarRectDoPalco(){
+  const r = $('palco').getBoundingClientRect();
+  if (r.width > 0 && r.height > 0) ponte.palcoMudou({ x: r.left, y: r.top, width: r.width, height: r.height });
+}
+new ResizeObserver(mandarRectDoPalco).observe($('palco'));
+window.addEventListener('resize', mandarRectDoPalco);
+
+/* =====================================================================
+ * AJUSTES
+ * =================================================================== */
+$('btn-ajustes').onclick = () => {
+  if ($('sec-ajustes').classList.contains('mostra')) { fecharLateral(); return; }
+  pintarAjustes();
+  mostrarLateral('sec-ajustes');
+};
+$('btn-fechar-ajustes').onclick = () => { fecharLateral(); if (chat.com) mostrarLateral('sec-chat'); };
+
+async function carregarConfig(){
+  try { config = await ponte.configLer(); } catch { config = {}; }
+  pintarAjustes();
+}
+function pintarAjustes(){
+  $('chave-bandeja').classList.toggle('on', !!config.bandeja);
+  $('chave-iniciar').classList.toggle('on', !!config.iniciarComWindows);
+  $('tecla-mic').textContent = bonitinho(config.atalhoMic);
+  $('tecla-surdo').textContent = bonitinho(config.atalhoSurdo);
+  // bloqueados moram nos ajustes
+  if (!$('lista-bloqueados')) {
+    const corpo = $('sec-ajustes').querySelector('.ajustes-corpo');
+    const sec = document.createElement('div'); sec.className = 'secao-ajuste'; sec.textContent = 'Bloqueados';
+    const lista = document.createElement('div'); lista.id = 'lista-bloqueados'; lista.style.display = 'flex'; lista.style.flexDirection = 'column'; lista.style.gap = '8px';
+    corpo.append(sec, lista);
+  }
+  pintarBloqueados();
+}
+function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
+async function mudarConfig(mudancas){
+  try { config = await ponte.configMudar(mudancas); } catch (e) { recado('Não consegui salvar o ajuste.', 'mal'); }
+  pintarAjustes();
+}
+$('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
+$('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
+
+// captura de tecla → acelerador do Electron ("Control+Shift+M")
+function ligarCapturaDeTecla(botao, chave){
+  botao.onclick = () => {
+    botao.classList.add('gravando'); botao.textContent = 'aperta a combinação…';
+    const ouvir = (ev) => {
+      ev.preventDefault();
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) return; // só modificador: espera a tecla
+      window.removeEventListener('keydown', ouvir, true);
+      botao.classList.remove('gravando');
+      if (ev.key === 'Escape') { pintarAjustes(); return; }
+      const partes = [];
+      if (ev.ctrlKey) partes.push('Control');
+      if (ev.altKey) partes.push('Alt');
+      if (ev.shiftKey) partes.push('Shift');
+      let k = ev.key;
+      if (k === ' ') k = 'Space';
+      else if (/^[a-z]$/i.test(k)) k = k.toUpperCase();
+      else if (/^F\d{1,2}$/.test(k) || /^\d$/.test(k)) { /* serve como está */ }
+      else if (ev.code.startsWith('Numpad')) k = 'num' + ev.code.slice(6).toLowerCase();
+      else { recado('Essa tecla não dá pra usar como atalho. Tenta letra, número ou F1–F12.', 'mal'); pintarAjustes(); return; }
+      partes.push(k);
+      if (partes.length === 1) { recado('Usa junto com Ctrl, Alt ou Shift — senão a tecla some do jogo.', 'mal'); pintarAjustes(); return; }
+      mudarConfig({ [chave]: partes.join('+') });
+    };
+    window.addEventListener('keydown', ouvir, true);
+  };
+}
+ligarCapturaDeTecla($('tecla-mic'), 'atalhoMic');
+ligarCapturaDeTecla($('tecla-surdo'), 'atalhoSurdo');
+carregarConfig();
 
 /* =====================================================================
  * VERSÃO E ATUALIZAÇÃO (o botão faz o processo inteiro)
