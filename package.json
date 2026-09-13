@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",
@@ -16,7 +16,7 @@
     "firebase": "^12.19.0"
   },
   "devDependencies": {
-    "electron": "^32.2.7",
+    "electron": "^44.3.0",
     "electron-builder": "^25.1.8"
   },
   "build": {

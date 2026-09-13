@@ -117,7 +117,10 @@ app.whenReady().then(async () => {
 
   // simula "logado" só na tela (sem Firebase): mostra a casa pra medir o palco
   await js(`document.getElementById('tela-login').style.display='none'; document.getElementById('tela-casa').style.display='flex'; true`);
-  await espera(400);
+  await espera(300);
+  // (o app mede o palco ao logar e ao chamar; aqui, sem login, avisa por "resize")
+  await js('window.dispatchEvent(new Event("resize")); true');
+  await espera(300);
   const r = JSON.parse(await js('JSON.stringify(document.getElementById("palco").getBoundingClientRect())'));
   ok('palco medido', r.width > 300 && r.height > 300, JSON.stringify(r));
 
@@ -154,6 +157,23 @@ app.whenReady().then(async () => {
     ok('estado da sala traduzido (sem "link")', /chamando Fulano/i.test(v.estado) && !/link/i.test(v.estado), v.estado);
     ok('menu da pessoa acessivel pro botao direito', v.menuPessoa === 'function' && v.pares === 'object');
     ok('falha de sala nao manda pro "modo manual"', v.caiu === true);
+
+    // ECO NA TRANSMISSÃO: toda captura de tela pedida pelo site, dentro do
+    // app, tem que sair com restrictOwnAudio (som do próprio app excluído).
+    // O seletor de tela do app abre (invisível) — o teste escolhe a 1ª tela.
+    const fontes = await electron.desktopCapturer.getSources({ types: ['screen'] });
+    setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id), 1500);
+    const cap = await view.webContents.executeJavaScript(`
+      (async function(){
+        try{
+          const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false }, systemAudio: 'include' });
+          const t = s.getAudioTracks()[0]; const st = t ? t.getSettings() : {};
+          s.getTracks().forEach(x => x.stop());
+          return JSON.stringify({ temAudio: !!t, restrict: st.restrictOwnAudio });
+        }catch(e){ return JSON.stringify({ erro: e.name + ': ' + e.message }); }
+      })()`, true);
+    let cj = null; try { cj = JSON.parse(cap); } catch {}
+    ok('captura de tela no app sai com o som próprio EXCLUÍDO (restrictOwnAudio)', !!(cj && cj.temAudio && cj.restrict === true), cap);
 
     // a lateral (chat/ajustes) abre → o palco encolhe → a view acompanha
     await js('document.getElementById("btn-ajustes").click(); true');

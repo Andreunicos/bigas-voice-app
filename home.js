@@ -662,6 +662,7 @@ async function chamarAmigo(amigoUid, amigoNick){
   if (call.estado !== 'nenhuma') { recado('Você já está numa chamada.', 'mal'); return; }
   entrarEmEstado('conectando', amigoNick, 'chamando');
   $('conectando-txt').textContent = 'Chamando ' + amigoNick + '…';
+  mandarRectDoPalco(); // garantia: a view nasce já no lugar certo
   try{
     const link = await ponte.iniciarCall(eu.nick, amigoNick);
     if (!link) {
@@ -862,6 +863,7 @@ function pintarConvite(){
       entrarEmEstado('conectando', c.deNick, 'atendendo');
       call.link = c.link;
       $('conectando-txt').textContent = 'Entrando na chamada de ' + c.deNick + '…';
+      mandarRectDoPalco();
       const ok = await ponte.entrarComLink(c.link, eu.nick, c.deNick);
       if (!ok) { if (call.estado !== 'nenhuma') entrarEmEstado('nenhuma'); recado('Não consegui entrar na chamada.', 'mal'); }
     }catch(e){

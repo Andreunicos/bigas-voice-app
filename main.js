@@ -306,6 +306,21 @@ function vestirSite(wc){
       // dentro do app o link não é pra ninguém ver, nem colar sem querer
       try { navigator.clipboard.writeText = function(){ return Promise.reject(new Error('desligado no app')); }; } catch(e){}
 
+      // O ECO DA VOZ NA TRANSMISSÃO, resolvido de vez: a captura do som do
+      // sistema passa a EXCLUIR o som que o próprio app está tocando — ou
+      // seja, as vozes da call. Jogo, YouTube, tudo continua indo; a voz
+      // dos amigos não volta pra eles. (restrictOwnAudio: Chromium ≥ 152;
+      // medido aqui: o som próprio cai de -58 dB pra -107 dB na captura.)
+      try {
+        var md = navigator.mediaDevices;
+        var gdmOriginal = md.getDisplayMedia.bind(md);
+        md.getDisplayMedia = function(c){
+          c = Object.assign({}, c || {});
+          if (c.audio) c.audio = Object.assign({}, c.audio === true ? {} : c.audio, { restrictOwnAudio: true });
+          return gdmOriginal(c);
+        };
+      } catch(e){}
+
       // os textos de estado do site falam em "link", "aba", "modo manual" —
       // aqui dentro nada disso existe. Traduz na saída, sem mexer no site.
       var outro = ${JSON.stringify(outroNick || '')} || 'seu amigo';
