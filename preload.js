@@ -23,4 +23,8 @@ contextBridge.exposeInMainWorld('bigasColarLink', {
 contextBridge.exposeInMainWorld('bigasApp', {
   abrirColarLink: () => ipcRenderer.send('colar-link:abrir'),
   verificarAtualizacao: () => ipcRenderer.send('atualizar:verificar'),
+  instalarAtualizacao: () => ipcRenderer.send('atualizar:instalar'),
+  aoMudarEstadoAtualizacao: (funcao) => {
+    ipcRenderer.on('atualizar:estado', (_ev, dados) => funcao(dados));
+  },
 });

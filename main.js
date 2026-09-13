@@ -18,7 +18,7 @@
  * tela sem o teto de fps, e áudio isolado por programa. Isso exige código
  * nativo de verdade, e essa etapa aqui é só o alicerce.
  * ================================================================== */
-const { app, BrowserWindow, session, desktopCapturer, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -73,41 +73,94 @@ function injetarBotaoDeLink(){
   janelaPrincipal.webContents.insertCSS(`
     #bigas-botoes-app{
       position:fixed; left:16px; bottom:16px; z-index:999999;
-      display:flex; gap:8px;
+      display:flex; gap:8px; font:600 12.5px/1 system-ui,-apple-system,'Segoe UI',sans-serif;
     }
     #bigas-botoes-app button{
-      background:#171a21; color:#eef1f6; border:1px solid #2a2f3a;
-      border-radius:22px; padding:9px 16px; font:600 12.5px system-ui,sans-serif;
-      cursor:pointer; box-shadow:0 8px 22px rgba(0,0,0,.4);
+      border:0; border-radius:22px; padding:10px 18px; cursor:pointer;
+      font:inherit; color:#fff; box-shadow:0 8px 22px rgba(0,0,0,.45);
+      display:flex; align-items:center; gap:8px; position:relative; overflow:hidden;
     }
-    #bigas-botoes-app button:hover{ background:#1d212a; border-color:#0891b2 }
-    #bigas-botoes-app button:disabled{ opacity:.6; cursor:default }
+    #bigas-link{ background:#171a21; border:1px solid #2a2f3a }
+    #bigas-link:hover{ background:#1d212a; border-color:#0891b2 }
+    /* estados do botão de atualizar — cor muda com o que está acontecendo,
+       não é só o texto: parado é neutro, achou é azul, pronto é verde */
+    #bigas-atualizar{ background:#171a21; border:1px solid #2a2f3a; min-width:190px; justify-content:center }
+    #bigas-atualizar.achou{ border-color:#0891b2 }
+    #bigas-atualizar.pronto{ background:#3fd07a; border-color:#3fd07a; color:#0c0d10; font-weight:700 }
+    #bigas-atualizar.pronto:hover{ background:#59d98d }
+    #bigas-atualizar:disabled{ cursor:default; opacity:.85 }
+    /* a barra de progresso é o próprio fundo do botão enchendo — não um
+       elemento à parte, pra não precisar de outra camada de layout */
+    #bigas-atualizar .barra{
+      position:absolute; inset:0; background:#0891b2; z-index:0;
+      transform-origin:left; transform:scaleX(0); transition:transform .25s linear;
+    }
+    #bigas-atualizar span{ position:relative; z-index:1; white-space:nowrap }
+    @keyframes bigas-gira{ to{ transform:rotate(360deg) } }
+    #bigas-atualizar .girando{
+      width:12px; height:12px; border:2px solid rgba(255,255,255,.35);
+      border-top-color:#fff; border-radius:50%; animation:bigas-gira .7s linear infinite;
+      position:relative; z-index:1; flex-shrink:0;
+    }
   `);
   janelaPrincipal.webContents.executeJavaScript(`
     (function(){
       if (document.getElementById('bigas-botoes-app')) return;
+
       var caixa = document.createElement('div');
       caixa.id = 'bigas-botoes-app';
 
       var bLink = document.createElement('button');
-      bLink.type = 'button';
+      bLink.id = 'bigas-link'; bLink.type = 'button';
       bLink.textContent = '🔗 Entrar com um link';
       bLink.onclick = function(){ window.bigasApp.abrirColarLink(); };
 
-      var bAtualizar = document.createElement('button');
-      bAtualizar.type = 'button';
-      bAtualizar.textContent = '🔄 Verificar atualização';
-      bAtualizar.onclick = function(){
-        bAtualizar.disabled = true;
-        bAtualizar.textContent = '🔄 Checando...';
-        window.bigasApp.verificarAtualizacao();
-        setTimeout(function(){
-          bAtualizar.disabled = false;
-          bAtualizar.textContent = '🔄 Verificar atualização';
-        }, 8000); // se a resposta demorar mais que isso, o botão libera de novo sozinho
-      };
+      var bAt = document.createElement('button');
+      bAt.id = 'bigas-atualizar'; bAt.type = 'button';
+      var barra = document.createElement('div'); barra.className = 'barra';
+      var rotulo = document.createElement('span'); rotulo.textContent = '🔄 Verificar atualização';
+      bAt.append(barra, rotulo);
 
-      caixa.append(bLink, bAtualizar);
+      var voltarPraOcioso = null;
+      function estado(nome, extra){
+        clearTimeout(voltarPraOcioso);
+        bAt.className = '';
+        bAt.disabled = false;
+        barra.style.transform = 'scaleX(0)';
+        var girando = bAt.querySelector('.girando');
+        if (girando) girando.remove();
+
+        if (nome === 'ocioso') {
+          rotulo.textContent = '🔄 Verificar atualização';
+        } else if (nome === 'verificando') {
+          bAt.disabled = true;
+          var g = document.createElement('span'); g.className = 'girando';
+          bAt.insertBefore(g, rotulo);
+          rotulo.textContent = 'Procurando atualização...';
+        } else if (nome === 'baixando') {
+          bAt.className = 'achou'; bAt.disabled = true;
+          barra.style.transform = 'scaleX(' + ((extra && extra.percentual || 0) / 100) + ')';
+          rotulo.textContent = 'Baixando... ' + Math.round(extra && extra.percentual || 0) + '%';
+        } else if (nome === 'pronto') {
+          bAt.className = 'pronto'; bAt.disabled = false;
+          rotulo.textContent = '🔁 Reiniciar e atualizar agora';
+        } else if (nome === 'atualizado') {
+          rotulo.textContent = '✅ Já está atualizado';
+          voltarPraOcioso = setTimeout(function(){ estado('ocioso'); }, 3500);
+        } else if (nome === 'erro') {
+          rotulo.textContent = '⚠️ Não consegui checar agora';
+          voltarPraOcioso = setTimeout(function(){ estado('ocioso'); }, 4000);
+        }
+      }
+      estado('ocioso');
+
+      bAt.onclick = function(){
+        if (bAt.className === 'pronto') { window.bigasApp.instalarAtualizacao(); return; }
+        window.bigasApp.verificarAtualizacao();
+      };
+      window.bigasApp.aoMudarEstadoAtualizacao(function(dados){ estado(dados.estado, dados); });
+
+      caixa.append(bLink, bAt);
       document.body.appendChild(caixa);
     })();
   `).catch(() => {});
@@ -243,66 +296,44 @@ function ligarSeletorDeTela(){
  * a captura nativa. Fonte: GitHub Releases deste mesmo repositório,
  * publicado com "npm run publicar".
  * ------------------------------------------------------------------ */
-/* ---- estado da atualização, pra o botão manual saber o que fazer ---- */
-let atualizacaoPronta = false;   // já baixou, só falta reiniciar pra valer
-let verificandoNaMao = false;    // a pessoa clicou no botão — dar retorno visível
-
-function fecharAtualizarEAbrir(){
-  dialog.showMessageBox(janelaPrincipal, {
-    type: 'info', title: 'Bigas Voice',
-    message: 'Atualização baixada. O Bigas Voice vai fechar e abrir de novo, já atualizado.',
-    buttons: ['Ok'],
-  }).then(() => autoUpdater.quitAndInstall());
+/* ---------------------------------------------------------------------
+ * O ESTADO VAI PRO BOTÃO SEMPRE, NÃO SÓ QUANDO A PESSOA CLICA
+ * ---------------------------------------------------------------------
+ * Versão anterior só respondia quando a pessoa clicava — se o app achasse
+ * e baixasse uma atualização sozinho, em segundo plano, o botão continuava
+ * dizendo "Verificar atualização" como se nada tivesse acontecido. Errado:
+ * quem olhar a tela tem que VER que tem atualização pronta, sem precisar
+ * clicar pra descobrir. Por isso todo evento do autoUpdater — clicado ou
+ * não — transmite pro botão via 'atualizar:estado'.
+ * ------------------------------------------------------------------ */
+function transmitirEstadoAtualizacao(estado, extra){
+  if (janelaPrincipal && !janelaPrincipal.isDestroyed())
+    janelaPrincipal.webContents.send('atualizar:estado', Object.assign({ estado }, extra||{}));
 }
 
 function ligarAtualizacaoAutomatica(){
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on('update-downloaded', () => {
-    atualizacaoPronta = true;
-    // instala sozinho na próxima vez que o app fechar — sem interromper
-    // quem está no meio de uma call. Mas se foi a PESSOA que pediu pra
-    // checar agora (clicou no botão), ela está esperando ver algo
-    // acontecer — não faz sentido fazer ela esperar fechar sozinha depois.
-    if (verificandoNaMao) { verificandoNaMao = false; fecharAtualizarEAbrir(); }
-  });
-  autoUpdater.on('update-not-available', () => {
-    if (verificandoNaMao) {
-      verificandoNaMao = false;
-      dialog.showMessageBox(janelaPrincipal, {
-        type: 'info', title: 'Bigas Voice',
-        message: 'Você já está na versão mais recente.',
-      });
-    }
-  });
+  autoUpdater.on('checking-for-update', () => transmitirEstadoAtualizacao('verificando'));
+  autoUpdater.on('update-available', () => transmitirEstadoAtualizacao('baixando', { percentual: 0 }));
+  autoUpdater.on('download-progress', (p) =>
+    transmitirEstadoAtualizacao('baixando', { percentual: Math.round(p.percent) }));
+  autoUpdater.on('update-downloaded', () => transmitirEstadoAtualizacao('pronto'));
+  autoUpdater.on('update-not-available', () => transmitirEstadoAtualizacao('atualizado'));
   autoUpdater.on('error', (erro) => {
-    if (verificandoNaMao) {
-      verificandoNaMao = false;
-      dialog.showMessageBox(janelaPrincipal, {
-        type: 'error', title: 'Bigas Voice',
-        message: 'Não consegui checar agora (sem internet, ou nenhuma versão publicada ainda).',
-      });
-    }
+    transmitirEstadoAtualizacao('erro');
     console.error('atualização automática falhou (não é crítico):', erro);
   });
 
-  autoUpdater.checkForUpdatesAndNotify().catch(() => {
-    // sem internet, ou ainda não existe nenhum Release publicado — segue
-    // a vida normalmente com a versão que já está instalada
-  });
+  autoUpdater.checkForUpdatesAndNotify().catch(() => transmitirEstadoAtualizacao('erro'));
 }
 
-/* O botão "Verificar atualização" na tela: se já tem uma baixada e
-   esperando (aconteceu de fundo, sem a pessoa pedir), instala na hora.
-   Senão, dispara uma checagem nova e avisa o resultado — "já está
-   atualizado" ou baixa e instala, sempre com retorno visível dessa vez. */
 function ligarVerificacaoManual(){
   ipcMain.on('atualizar:verificar', () => {
-    if (atualizacaoPronta) { fecharAtualizarEAbrir(); return; }
-    verificandoNaMao = true;
-    autoUpdater.checkForUpdates().catch(() => { verificandoNaMao = false; });
+    autoUpdater.checkForUpdates().catch(() => transmitirEstadoAtualizacao('erro'));
   });
+  ipcMain.on('atualizar:instalar', () => autoUpdater.quitAndInstall());
 }
 
 app.whenReady().then(() => {
