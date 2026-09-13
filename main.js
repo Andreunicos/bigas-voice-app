@@ -71,6 +71,14 @@ function criarJanelaPrincipal(){
  * ------------------------------------------------------------------ */
 function injetarBotaoDeLink(){
   janelaPrincipal.webContents.insertCSS(`
+    /* a versão do APLICATIVO (a casca) — não é a mesma VERSAO do site,
+       que já aparece no canto do próprio Bigas Voice. Essa aqui existe
+       pra responder "atualizou ou não" sem precisar clicar em nada. */
+    #bigas-versao{
+      position:fixed; right:10px; bottom:6px; z-index:999999;
+      font:500 11px system-ui,-apple-system,'Segoe UI',sans-serif;
+      color:#6d7583; pointer-events:none; user-select:none;
+    }
     #bigas-botoes-app{
       position:fixed; left:16px; bottom:16px; z-index:999999;
       display:flex; gap:8px; font:600 12.5px/1 system-ui,-apple-system,'Segoe UI',sans-serif;
@@ -105,6 +113,12 @@ function injetarBotaoDeLink(){
   `);
   janelaPrincipal.webContents.executeJavaScript(`
     (function(){
+      if (!document.getElementById('bigas-versao')) {
+        var v = document.createElement('div');
+        v.id = 'bigas-versao';
+        v.textContent = 'aplicativo v${app.getVersion()}';
+        document.body.appendChild(v);
+      }
       if (document.getElementById('bigas-botoes-app')) return;
 
       var caixa = document.createElement('div');
