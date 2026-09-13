@@ -1,30 +1,34 @@
 /* =====================================================================
- * BIGAS VOICE — a casca do aplicativo (Etapa 1)
+ * BIGAS VOICE — o aplicativo (Discord 2.0)
  * ---------------------------------------------------------------------
- * Este app NÃO tem o Bigas Voice dentro dele. Ele abre o site de sempre
- * (https://andreunicos.github.io) numa janela própria, com ícone e tudo.
- * Vantagem: quando o site atualiza, o app mostra a versão nova na hora,
- * sem precisar baixar nada — só o que É do aplicativo (esta casca) passa
- * pelo auto-update.
+ * Virou de verdade um app com identidade: a primeira tela é login
+ * (nick+senha, conta no Firebase), depois uma casa com lista de amigos
+ * — sem link, sem código, nunca mais. Chamar um amigo já leva você
+ * direto pra dentro da call.
  *
- * O que esta casca resolve que o navegador sozinho não resolve:
- *   1) uma janela própria, com ícone, separada do navegador;
- *   2) atualização automática da CASCA (electron-updater), de graça,
- *      puxando do GitHub Releases deste mesmo repositório;
- *   3) o seletor de tela (Electron não mostra o seletor nativo do Chrome
- *      sozinho — tem que ser construído, é o que `seletor-de-tela.*` faz).
+ * A peça que faz isso funcionar sem reescrever o Bigas Voice: quem gera
+ * o link de uma sala continua sendo o PRÓPRIO SITE, sempre — nunca
+ * reimplementamos a criptografia dele aqui. Só que agora isso acontece
+ * numa janela ESCONDIDA (`janelaFundo`), e o link resultante é usado pra
+ * navegar a janela DE VERDADE (`janelaPrincipal`) pra dentro da call.
+ * A pessoa nunca vê a sala sendo criada nem o link em si.
  *
- * O que esta casca AINDA NÃO resolve (fica para a Etapa 2/3): captura de
- * tela sem o teto de fps, e áudio isolado por programa. Isso exige código
- * nativo de verdade, e essa etapa aqui é só o alicerce.
+ * `home.html` é a casa (login + amigos). `janelaPrincipal` mostra ELA
+ * por padrão, e só troca pro site de verdade quando uma call começa —
+ * seja porque você chamou alguém, seja porque aceitou um convite.
  * ================================================================== */
-const { app, BrowserWindow, session, desktopCapturer, ipcMain } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain, shell } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
 const SITE = 'https://andreunicos.github.io/';
 
 let janelaPrincipal = null;
+let janelaFundo = null; // escondida, só existe pra gerar links de sala
+
+function linkEhValido(url){
+  try { return new URL(url).origin === new URL(SITE).origin; } catch { return false; }
+}
 
 function criarJanelaPrincipal(){
   janelaPrincipal = new BrowserWindow({
@@ -33,8 +37,8 @@ function criarJanelaPrincipal(){
     minWidth: 760,
     minHeight: 560,
     title: 'Bigas Voice',
-    backgroundColor: '#121419', // mesma cor de fundo do site, evita o "flash branco" ao abrir
-    autoHideMenuBar: true,      // ninguém precisa da barra de menu padrão do Electron aqui
+    backgroundColor: '#0c0d10',
+    autoHideMenuBar: true,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -43,37 +47,93 @@ function criarJanelaPrincipal(){
     },
   });
 
-  janelaPrincipal.loadURL(SITE);
+  janelaPrincipal.loadFile('home.html');
 
-  // link "abrir em nova aba" ou pop-up (ex.: convite compartilhado por outro
-  // app) deve abrir no navegador de verdade, não numa segunda janela do app
+  // link "abrir em nova aba" ou pop-up deve abrir no navegador de
+  // verdade, não numa segunda janela do app
   janelaPrincipal.webContents.setWindowOpenHandler(({ url }) => {
-    require('electron').shell.openExternal(url);
+    shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  janelaPrincipal.webContents.on('did-finish-load', injetarBotaoDeLink);
+  janelaPrincipal.webContents.on('did-finish-load', injetarBotoesDeCall);
+}
+
+function criarJanelaFundo(){
+  janelaFundo = new BrowserWindow({
+    show: false,
+    webPreferences: { contextIsolation: true, sandbox: true },
+  });
+  janelaFundo.loadURL(SITE).catch(() => {});
 }
 
 /* ---------------------------------------------------------------------
- * "ENTRAR COM UM LINK" — a peça que faltava
+ * GERAR UMA SALA SEM MOSTRAR NADA DISSO PRA PESSOA
  * ---------------------------------------------------------------------
- * No site, clicar no link do convite JÁ É a entrada — o navegador abre
- * aquela URL, com a chave da sala no fragmento (#), e o próprio site lê
- * isso e entra sozinho. O app não tem barra de endereço nenhuma: sempre
- * abre a MESMA tela inicial. Sem um jeito de "colar o link aqui dentro",
- * quem só tem o app nunca consegue entrar na sala de ninguém.
- *
- * O botão flutuante chama uma janelinha (preload separado, mesmo padrão
- * do seletor de tela) que pede o link colado e manda a janela principal
- * navegar pra ele — validando que é mesmo do nosso site antes, pra não
- * virar um jeito de abrir qualquer coisa dentro do app.
+ * "Chamar" um amigo, por trás, ainda é clicar em "Criar sala e pegar o
+ * link" — só que quem clica é a janela escondida, não a pessoa. Sempre
+ * recarrega o site ali antes de gerar, pra nunca herdar sala de uma
+ * chamada anterior; e recarrega de novo DEPOIS de entregar o link, pra
+ * a janela escondida abandonar aquela sala assim que a de verdade
+ * (janelaPrincipal) assume como participante real.
  * ------------------------------------------------------------------ */
-function injetarBotaoDeLink(){
+async function gerarLinkDeChamada(){
+  if (!janelaFundo || janelaFundo.isDestroyed()) return null;
+  try{
+    await janelaFundo.loadURL(SITE);
+    return await janelaFundo.webContents.executeJavaScript(`
+      (async function(){
+        var botao = document.getElementById('btn-sala');
+        if (!botao) return null;
+        botao.click();
+        for (var i = 0; i < 60; i++) {
+          await new Promise(function(r){ setTimeout(r, 300); });
+          var campo = document.getElementById('sala-link');
+          if (campo && campo.value) return campo.value;
+        }
+        return null;
+      })();
+    `);
+  }catch(e){
+    console.error('gerar link de chamada falhou', e);
+    return null;
+  }
+}
+
+function ligarChamadas(){
+  // "chamar": gera o link de verdade, JÁ leva a janela principal pra
+  // dentro da call, e devolve o link só pra guardar no convite
+  ipcMain.handle('call:iniciar', async () => {
+    const link = await gerarLinkDeChamada();
+    if (link) {
+      janelaPrincipal.loadURL(link);
+      janelaFundo.loadURL(SITE).catch(() => {}); // libera a janela escondida da sala que acabou de criar
+    }
+    return link;
+  });
+
+  // "aceitar um convite recebido": navega direto pro link que já veio pronto
+  ipcMain.on('call:entrar', (ev, link) => {
+    if (linkEhValido(link)) janelaPrincipal.loadURL(link);
+  });
+
+  // "voltar pra casa": sai da call, volta pra tela de amigos
+  ipcMain.on('call:sair', () => janelaPrincipal.loadFile('home.html'));
+}
+
+/* ---------------------------------------------------------------------
+ * OS BOTÕES FLUTUANTES SÓ FAZEM SENTIDO DENTRO DE UMA CALL
+ * ---------------------------------------------------------------------
+ * A janela principal mostra a home (que já tem sua própria interface)
+ * OU o site de verdade (dentro de uma call). Estes botões (voltar pra
+ * casa, verificar atualização, versão) só existem na segunda situação —
+ * a home não precisa deles, tem seu próprio jeito de fazer tudo isso.
+ * ------------------------------------------------------------------ */
+function injetarBotoesDeCall(){
+  const url = janelaPrincipal.webContents.getURL();
+  if (!url.startsWith(SITE)) return; // está na home — nada a injetar aqui
+
   janelaPrincipal.webContents.insertCSS(`
-    /* a versão do APLICATIVO (a casca) — não é a mesma VERSAO do site,
-       que já aparece no canto do próprio Bigas Voice. Essa aqui existe
-       pra responder "atualizou ou não" sem precisar clicar em nada. */
     #bigas-versao{
       position:fixed; right:10px; bottom:6px; z-index:999999;
       font:500 11px system-ui,-apple-system,'Segoe UI',sans-serif;
@@ -88,17 +148,13 @@ function injetarBotaoDeLink(){
       font:inherit; color:#fff; box-shadow:0 8px 22px rgba(0,0,0,.45);
       display:flex; align-items:center; gap:8px; position:relative; overflow:hidden;
     }
-    #bigas-link, #bigas-conta{ background:#171a21; border:1px solid #2a2f3a }
-    #bigas-link:hover, #bigas-conta:hover{ background:#1d212a; border-color:#0891b2 }
-    /* estados do botão de atualizar — cor muda com o que está acontecendo,
-       não é só o texto: parado é neutro, achou é azul, pronto é verde */
+    #bigas-casa{ background:#171a21; border:1px solid #2a2f3a }
+    #bigas-casa:hover{ background:#1d212a; border-color:#0891b2 }
     #bigas-atualizar{ background:#171a21; border:1px solid #2a2f3a; min-width:190px; justify-content:center }
     #bigas-atualizar.achou{ border-color:#0891b2 }
     #bigas-atualizar.pronto{ background:#3fd07a; border-color:#3fd07a; color:#0c0d10; font-weight:700 }
     #bigas-atualizar.pronto:hover{ background:#59d98d }
     #bigas-atualizar:disabled{ cursor:default; opacity:.85 }
-    /* a barra de progresso é o próprio fundo do botão enchendo — não um
-       elemento à parte, pra não precisar de outra camada de layout */
     #bigas-atualizar .barra{
       position:absolute; inset:0; background:#0891b2; z-index:0;
       transform-origin:left; transform:scaleX(0); transition:transform .25s linear;
@@ -124,15 +180,10 @@ function injetarBotaoDeLink(){
       var caixa = document.createElement('div');
       caixa.id = 'bigas-botoes-app';
 
-      var bLink = document.createElement('button');
-      bLink.id = 'bigas-link'; bLink.type = 'button';
-      bLink.textContent = '🔗 Entrar com um link';
-      bLink.onclick = function(){ window.bigasApp.abrirColarLink(); };
-
-      var bConta = document.createElement('button');
-      bConta.id = 'bigas-conta'; bConta.type = 'button';
-      bConta.textContent = '👤 Conta e amigos';
-      bConta.onclick = function(){ window.bigasApp.abrirConta(); };
+      var bCasa = document.createElement('button');
+      bCasa.id = 'bigas-casa'; bCasa.type = 'button';
+      bCasa.textContent = '🏠 Amigos';
+      bCasa.onclick = function(){ window.bigasApp.voltarParaAmigos(); };
 
       var bAt = document.createElement('button');
       bAt.id = 'bigas-atualizar'; bAt.type = 'button';
@@ -179,126 +230,18 @@ function injetarBotaoDeLink(){
       };
       window.bigasApp.aoMudarEstadoAtualizacao(function(dados){ estado(dados.estado, dados); });
 
-      caixa.append(bLink, bConta, bAt);
+      caixa.append(bCasa, bAt);
       document.body.appendChild(caixa);
     })();
   `).catch(() => {});
-}
-
-function abrirColarLink(){
-  const janela = new BrowserWindow({
-    width: 480,
-    height: 240,
-    parent: janelaPrincipal,
-    modal: true,
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    title: 'Entrar com um link',
-    backgroundColor: '#121419',
-    autoHideMenuBar: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
-  janela.loadFile('colar-link.html');
-}
-
-function linkEhValido(url){
-  try { return new URL(url).origin === new URL(SITE).origin; } catch { return false; }
-}
-
-function ligarEntradaPorLink(){
-  ipcMain.on('colar-link:abrir', () => abrirColarLink());
-  ipcMain.on('colar-link:entrar', (ev, url) => {
-    const valido = linkEhValido(url);
-    if (valido) {
-      janelaPrincipal.loadURL(url);
-      const janela = BrowserWindow.fromWebContents(ev.sender);
-      if (janela && !janela.isDestroyed()) janela.close();
-    }
-    ev.returnValue = valido;
-  });
-  // mesma coisa, mas sem fechar a janela de quem pediu — usado pela tela
-  // de Conta, que continua aberta depois de mandar você pra call
-  ipcMain.on('colar-link:entrar-silencioso', (ev, url) => {
-    if (linkEhValido(url)) janelaPrincipal.loadURL(url);
-  });
-}
-
-/* ---------------------------------------------------------------------
- * CONTA E AMIGOS
- * ---------------------------------------------------------------------
- * Essa janela roda o SDK do Firebase (autenticação + Firestore) — não
- * mexe no site nem no protocolo dele. A única ponte com o site real é
- * pedir um link de sala de verdade: em vez de reimplementar a criptografia
- * do Bigas Voice aqui (arriscado, duplicaria lógica e quebraria fácil se o
- * site mudar), a gente pede pra JANELA PRINCIPAL — que já tem o site
- * carregado — clicar no próprio botão "Criar sala" dela mesma, e devolve
- * o link que apareceu. Sempre o site quem gera o link; a Conta só pede.
- * ------------------------------------------------------------------ */
-let janelaConta = null;
-
-function abrirConta(){
-  if (janelaConta && !janelaConta.isDestroyed()) { janelaConta.focus(); return; }
-  janelaConta = new BrowserWindow({
-    width: 420,
-    height: 620,
-    parent: janelaPrincipal,
-    title: 'Conta e amigos — Bigas Voice',
-    backgroundColor: '#121419',
-    autoHideMenuBar: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      preload: path.join(__dirname, 'conta-preload.js'),
-    },
-  });
-  janelaConta.loadFile('conta.html');
-  janelaConta.on('closed', () => { janelaConta = null; });
-}
-
-async function gerarLinkNoSite(){
-  if (!janelaPrincipal || janelaPrincipal.isDestroyed()) return null;
-  try{
-    return await janelaPrincipal.webContents.executeJavaScript(`
-      (async function(){
-        var jaTem = document.getElementById('sala-link');
-        if (jaTem && jaTem.value) return jaTem.value;
-        var botao = document.getElementById('btn-sala');
-        if (!botao) return null; // não está na tela de entrada — não dá pra criar sala agora
-        botao.click();
-        for (var i = 0; i < 60; i++) {
-          await new Promise(function(r){ setTimeout(r, 300); });
-          var campo = document.getElementById('sala-link');
-          if (campo && campo.value) return campo.value;
-        }
-        return null;
-      })();
-    `);
-  }catch(e){
-    console.error('gerar link pro convite falhou', e);
-    return null;
-  }
-}
-
-function ligarConta(){
-  ipcMain.on('conta:abrir', () => abrirConta());
-  ipcMain.handle('conta:gerar-link', () => gerarLinkNoSite());
 }
 
 /* ---------------------------------------------------------------------
  * MICROFONE E CÂMERA
  * ---------------------------------------------------------------------
  * O Electron, ao contrário do Chrome de verdade, não pergunta sozinho —
- * ele nega por padrão a não ser que o app decida. Aqui a regra é simples:
- * só o próprio site do Bigas Voice pode pedir, e só media (mic/câmera/
- * tela) — qualquer outra permissão (notificação, geolocalização etc.)
- * continua negada.
+ * ele nega por padrão a não ser que o app decida. Só o próprio site do
+ * Bigas Voice pode pedir, e só media (mic/câmera/tela).
  * ------------------------------------------------------------------ */
 function ligarPermissoes(){
   const permitido = new Set(['media']);
@@ -317,8 +260,7 @@ function ligarPermissoes(){
  * ---------------------------------------------------------------------
  * getDisplayMedia() dentro do Electron não abre sozinho aquele painel do
  * Chrome com miniaturas de tela/janela — quem tem que desenhar esse
- * painel é o próprio app. `desktopCapturer.getSources` traz a lista com
- * miniaturas; `seletor-de-tela.html` mostra e devolve a escolha.
+ * painel é o próprio app.
  * ------------------------------------------------------------------ */
 function ligarSeletorDeTela(){
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
@@ -360,9 +302,7 @@ function ligarSeletorDeTela(){
       respondido = true;
       const escolhida = fontes.find(f => f.id === escolhaId);
       if(!janelaSeletor.isDestroyed()) janelaSeletor.close();
-      if(!escolhida){ callback({}); return; } // cancelou: nenhuma fonte = sem captura
-      // 'loopback' pede o som do sistema inteiro — o Electron sabe fazer
-      // isso no Windows; em outros sistemas ele ignora sozinho.
+      if(!escolhida){ callback({}); return; }
       callback({ video: escolhida, audio: 'loopback' });
     };
 
@@ -380,20 +320,8 @@ function ligarSeletorDeTela(){
  * ATUALIZAÇÃO AUTOMÁTICA DA CASCA
  * ---------------------------------------------------------------------
  * Isto NÃO atualiza o Bigas Voice em si (o site já se atualiza sozinho
- * comparando VERSAO, e este app sempre carrega o site ao vivo). Isto
- * atualiza o APLICATIVO — a janela, o seletor de tela, e mais pra frente
- * a captura nativa. Fonte: GitHub Releases deste mesmo repositório,
- * publicado com "npm run publicar".
- * ------------------------------------------------------------------ */
-/* ---------------------------------------------------------------------
- * O ESTADO VAI PRO BOTÃO SEMPRE, NÃO SÓ QUANDO A PESSOA CLICA
- * ---------------------------------------------------------------------
- * Versão anterior só respondia quando a pessoa clicava — se o app achasse
- * e baixasse uma atualização sozinho, em segundo plano, o botão continuava
- * dizendo "Verificar atualização" como se nada tivesse acontecido. Errado:
- * quem olhar a tela tem que VER que tem atualização pronta, sem precisar
- * clicar pra descobrir. Por isso todo evento do autoUpdater — clicado ou
- * não — transmite pro botão via 'atualizar:estado'.
+ * comparando VERSAO). Isto atualiza o APLICATIVO. Fonte: GitHub Releases
+ * deste repositório, publicado com "npm run publicar".
  * ------------------------------------------------------------------ */
 function transmitirEstadoAtualizacao(estado, extra){
   if (janelaPrincipal && !janelaPrincipal.isDestroyed())
@@ -428,9 +356,9 @@ function ligarVerificacaoManual(){
 app.whenReady().then(() => {
   ligarPermissoes();
   ligarSeletorDeTela();
-  ligarEntradaPorLink();
-  ligarConta();
+  ligarChamadas();
   ligarVerificacaoManual();
+  criarJanelaFundo();
   criarJanelaPrincipal();
   ligarAtualizacaoAutomatica();
 

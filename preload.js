@@ -1,8 +1,10 @@
-/* Ponte mínima e segura entre a janela do seletor de tela e o processo
- * principal. contextIsolation está ligado (é o certo, por segurança), então
- * a página não pode falar com o Electron sozinha — só pelo que é
- * explicitamente exposto aqui, e nada além disso. */
-const { contextBridge, ipcRenderer, clipboard } = require('electron');
+/* Ponte mínima e segura entre as janelas do app e o processo principal.
+   contextIsolation está ligado (é o certo, por segurança) — nada além do
+   que é explicitamente exposto aqui chega até a página. Este preload
+   serve tanto a janela principal (home OU o site de verdade, dependendo
+   do momento) quanto a janela do seletor de tela — cada uma só usa a
+   parte que faz sentido pra ela; o resto fica parado, sem problema. */
+const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('bigasSeletor', {
   aoReceberFontes: (funcao) => {
@@ -11,18 +13,16 @@ contextBridge.exposeInMainWorld('bigasSeletor', {
   escolher: (id) => ipcRenderer.send('seletor-de-tela:escolheu', id),
 });
 
-contextBridge.exposeInMainWorld('bigasColarLink', {
-  // devolve true/false na hora — quem decide se o link é válido é o
-  // processo principal (só ele conhece a origem oficial do site)
-  entrar: (url) => ipcRenderer.sendSync('colar-link:entrar', url),
-  pegarDaAreaDeTransferencia: () => Promise.resolve(clipboard.readText()),
+// usado pela HOME (home.html): chamar um amigo e aceitar um convite
+contextBridge.exposeInMainWorld('bigasHome', {
+  iniciarCall: () => ipcRenderer.invoke('call:iniciar'),
+  entrarComLink: (link) => ipcRenderer.send('call:entrar', link),
 });
 
-// usado só pela janela principal (o site de verdade, carregado da internet)
-// — o botão flutuante de "entrar com um link" chama isto.
+// usado só quando a janela principal está DENTRO de uma call (o site de
+// verdade carregado) — os botões flutuantes injetados chamam isto
 contextBridge.exposeInMainWorld('bigasApp', {
-  abrirColarLink: () => ipcRenderer.send('colar-link:abrir'),
-  abrirConta: () => ipcRenderer.send('conta:abrir'),
+  voltarParaAmigos: () => ipcRenderer.send('call:sair'),
   verificarAtualizacao: () => ipcRenderer.send('atualizar:verificar'),
   instalarAtualizacao: () => ipcRenderer.send('atualizar:instalar'),
   aoMudarEstadoAtualizacao: (funcao) => {

@@ -8,10 +8,8 @@ import {
   onSnapshot, addDoc, updateDoc, serverTimestamp, limit,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
-/* A chave aqui embaixo NÃO é segredo — é assim que o Firebase funciona:
-   quem trava o acesso de verdade são as REGRAS do Firestore (do lado do
-   servidor do Google), não esconder essa chave. Ela só identifica QUAL
-   projeto, não dá permissão nenhuma sozinha. */
+/* A chave aqui embaixo NÃO é segredo — quem trava o acesso de verdade são
+   as REGRAS do Firestore, do lado do servidor. Ver CLAUDE.md do app. */
 const firebaseConfig = {
   apiKey: 'AIzaSyAoPF_DtMb2q6MPFi_3GTyAjvy_Cai0uIU',
   authDomain: 'bigas-voice.firebaseapp.com',
@@ -25,20 +23,13 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-/* ---------------------------------------------------------------------
- * NICK VIRA E-MAIL POR BAIXO DOS PANOS
- * ---------------------------------------------------------------------
- * O Firebase Auth (no plano de graça) só faz login com formato de
- * e-mail. Em vez de pedir e-mail de verdade pro André, o nick vira um
- * e-mail fake e válido — a pessoa nunca vê isso, só digita o nick. */
 function nickParaEmail(nick){
-  const limpo = nick.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-  return limpo + '@bigasvoice.app';
+  return nick.trim().toLowerCase().replace(/[^a-z0-9_]/g, '') + '@bigasvoice.app';
 }
 
 const $ = (id) => document.getElementById(id);
 const telaLogin = $('tela-login');
-const telaConta = $('tela-conta');
+const telaCasa = $('tela-casa');
 
 let paraDeOuvirConvites = null;
 let paraDeOuvirAmigos = null;
@@ -57,9 +48,7 @@ $('btn-criar').onclick = async () => {
     await setDoc(doc(db, 'usuarios', cred.user.uid), {
       nick, nickBusca: nick.toLowerCase(), criadoEm: serverTimestamp(),
     });
-  }catch(e){
-    $('erro-login').textContent = traduzirErro(e);
-  }
+  }catch(e){ $('erro-login').textContent = traduzirErro(e); }
 };
 
 $('btn-entrar').onclick = async () => {
@@ -67,11 +56,8 @@ $('btn-entrar').onclick = async () => {
   const senha = $('senha').value;
   $('erro-login').textContent = '';
   if (!nick || !senha) { $('erro-login').textContent = 'Preenche o nick e a senha.'; return; }
-  try{
-    await signInWithEmailAndPassword(auth, nickParaEmail(nick), senha);
-  }catch(e){
-    $('erro-login').textContent = traduzirErro(e);
-  }
+  try{ await signInWithEmailAndPassword(auth, nickParaEmail(nick), senha); }
+  catch(e){ $('erro-login').textContent = traduzirErro(e); }
 };
 
 $('btn-sair').onclick = () => signOut(auth);
@@ -94,19 +80,18 @@ onAuthStateChanged(auth, async (usuario) => {
 
   if (!usuario) {
     telaLogin.style.display = 'flex';
-    telaConta.style.display = 'none';
+    telaCasa.style.display = 'none';
     return;
   }
 
   telaLogin.style.display = 'none';
-  telaConta.style.display = 'flex';
+  telaCasa.style.display = 'flex';
 
   const meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
-  const meuNick = meuDoc.exists() ? meuDoc.data().nick : '?';
-  $('meu-nick').textContent = meuNick;
+  $('meu-nick').textContent = meuDoc.exists() ? meuDoc.data().nick : '?';
 
   ouvirAmigos(usuario.uid);
-  ouvirConvites(usuario.uid, meuNick);
+  ouvirConvites(usuario.uid);
 });
 
 /* ---------------------------------------------------------------------
@@ -131,75 +116,74 @@ $('btn-add').onclick = async () => {
   $('add-nick').value = '';
 };
 
+function iniciais(nome){ return (nome||'?').slice(0,2).toUpperCase(); }
+
 function ouvirAmigos(meuUid){
   const ref = collection(db, 'usuarios', meuUid, 'amigos');
   paraDeOuvirAmigos = onSnapshot(ref, (snap) => {
     const lista = $('lista-amigos');
-    if (snap.empty) { lista.innerHTML = '<p class="vazio">Nenhum amigo salvo ainda.</p>'; return; }
+    if (snap.empty) { lista.innerHTML = '<p class="vazio">Nenhum amigo salvo ainda. Adiciona pelo nick aí em cima.</p>'; return; }
     lista.innerHTML = '';
     snap.forEach((d) => {
       const amigo = d.data();
       const linha = document.createElement('div');
       linha.className = 'amigo';
-      const nome = document.createElement('b'); nome.textContent = amigo.nick;
+      linha.innerHTML =
+        '<div class="avatar">' + iniciais(amigo.nick) + '</div>' +
+        '<div class="nome">' + escaparHtml(amigo.nick) + '</div>';
       const chamar = document.createElement('button');
-      chamar.className = 'b-azul'; chamar.type = 'button'; chamar.textContent = '📞 Chamar';
+      chamar.className = 'b-verde chamar'; chamar.type = 'button'; chamar.textContent = '📞 Chamar';
       chamar.onclick = () => chamarAmigo(d.id, amigo.nick, chamar);
-      linha.append(nome, chamar);
+      linha.appendChild(chamar);
       lista.appendChild(linha);
     });
   });
 }
 
+function escaparHtml(t){ const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
 /* ---------------------------------------------------------------------
- * CHAMAR: gera um link de verdade (pedindo pro site fazer isso, é ele
- * quem sabe o protocolo) e grava um convite que o amigo recebe na hora.
+ * CHAMAR: o processo principal gera o link de verdade (pedindo pro
+ * site fazer isso) E JÁ TE LEVA pra dentro da chamada — igual clicar
+ * em "Criar sala" sempre fez, só que agora sem mostrar link nenhum.
  * ------------------------------------------------------------------ */
 async function chamarAmigo(amigoUid, amigoNick, botao){
   botao.disabled = true;
   const textoOriginal = botao.textContent;
-  botao.textContent = 'Gerando link...';
+  botao.textContent = 'Chamando...';
   try{
-    const link = await window.bigasConta.gerarLinkDeConvite();
-    if (!link) { botao.textContent = 'Não consegui gerar o link'; setTimeout(() => botao.textContent = textoOriginal, 2500); return; }
+    const link = await window.bigasHome.iniciarCall();
+    if (!link) { botao.textContent = 'Não consegui'; setTimeout(() => { botao.disabled=false; botao.textContent = textoOriginal; }, 2500); return; }
     const meuDoc = await getDoc(doc(db, 'usuarios', auth.currentUser.uid));
     await addDoc(collection(db, 'convites'), {
       de: auth.currentUser.uid, deNick: meuDoc.data().nick,
       para: amigoUid, link, aberto: false, quando: serverTimestamp(),
     });
-    botao.textContent = '✅ Chamado!';
+    // a partir daqui a janela principal já mostra a call de verdade —
+    // esta tela (home) some de vista até a call acabar
   }catch(e){
     botao.textContent = 'Deu erro';
     console.error(e);
+    setTimeout(() => { botao.disabled=false; botao.textContent = textoOriginal; }, 2500);
   }
-  setTimeout(() => { botao.disabled = false; botao.textContent = textoOriginal; }, 2500);
 }
 
 /* ---------------------------------------------------------------------
- * RECEBER CHAMADAS — escuta em tempo real enquanto esta janela existir
+ * RECEBER CHAMADAS — escuta em tempo real enquanto a home estiver aberta
  * ------------------------------------------------------------------ */
 function ouvirConvites(meuUid){
   const ref = query(collection(db, 'convites'), where('para', '==', meuUid), where('aberto', '==', false));
   paraDeOuvirConvites = onSnapshot(ref, (snap) => {
-    const caixa = $('caixa-convites');
-    const lista = $('lista-convites');
-    if (snap.empty) { caixa.className = 'convites'; lista.innerHTML = ''; return; }
-    caixa.className = 'convites tem';
-    lista.innerHTML = '';
-    snap.forEach((d) => {
-      const convite = d.data();
-      const linha = document.createElement('div');
-      linha.className = 'convite';
-      const texto = document.createElement('b'); texto.textContent = convite.deNick + ' está te chamando';
-      const entrar = document.createElement('button');
-      entrar.className = 'b-verde'; entrar.type = 'button'; entrar.textContent = 'Entrar';
-      entrar.onclick = async () => {
-        entrar.disabled = true;
-        await updateDoc(doc(db, 'convites', d.id), { aberto: true });
-        window.bigasConta.entrarComLink(convite.link);
-      };
-      linha.append(texto, entrar);
-      lista.appendChild(linha);
-    });
+    const caixa = $('convite-chegando');
+    if (snap.empty) { caixa.className = 'convite-chegando'; return; }
+    const primeiro = snap.docs[0];
+    const convite = primeiro.data();
+    caixa.className = 'convite-chegando tem';
+    $('convite-texto').textContent = convite.deNick + ' está te chamando';
+    $('btn-aceitar-convite').onclick = async () => {
+      $('btn-aceitar-convite').disabled = true;
+      await updateDoc(doc(db, 'convites', primeiro.id), { aberto: true });
+      window.bigasHome.entrarComLink(convite.link);
+    };
   });
 }
