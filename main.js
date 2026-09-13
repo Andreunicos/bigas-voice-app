@@ -69,7 +69,10 @@ function criarJanelaPrincipal(){
   });
 
   janelaPrincipal.on('resize', posicionarView);
-  janelaPrincipal.on('closed', () => { janelaPrincipal = null; viewCall = null; });
+  // fechar a janela É fechar o app — nada fica em segundo plano. (A 0.3.0
+  // tinha uma janela invisível que nunca fechava; o processo ficava vivo
+  // e a atualização, que instala ao encerrar, nunca acontecia.)
+  janelaPrincipal.on('closed', () => { janelaPrincipal = null; viewCall = null; app.quit(); });
 }
 
 function avisarHome(canal, dados){
@@ -489,6 +492,4 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => app.quit());
