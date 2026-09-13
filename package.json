@@ -1,0 +1,42 @@
+{
+  "name": "bigas-voice-app",
+  "version": "0.1.0",
+  "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
+  "main": "main.js",
+  "author": "Andreunicos",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "publicar": "electron-builder --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^32.2.7",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.github.andreunicos.bigasvoice",
+    "productName": "Bigas Voice",
+    "files": [
+      "main.js",
+      "preload.js",
+      "seletor-de-tela.html",
+      "seletor-de-tela.js"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Andreunicos",
+      "repo": "bigas-voice-app"
+    }
+  }
+}
