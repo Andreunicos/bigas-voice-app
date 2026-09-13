@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",
@@ -24,7 +24,9 @@
       "main.js",
       "preload.js",
       "seletor-de-tela.html",
-      "seletor-de-tela.js"
+      "seletor-de-tela.js",
+      "colar-link.html",
+      "colar-link.js"
     ],
     "win": {
       "target": "nsis"

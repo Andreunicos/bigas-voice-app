@@ -39,6 +39,7 @@ function criarJanelaPrincipal(){
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -49,6 +50,80 @@ function criarJanelaPrincipal(){
   janelaPrincipal.webContents.setWindowOpenHandler(({ url }) => {
     require('electron').shell.openExternal(url);
     return { action: 'deny' };
+  });
+
+  janelaPrincipal.webContents.on('did-finish-load', injetarBotaoDeLink);
+}
+
+/* ---------------------------------------------------------------------
+ * "ENTRAR COM UM LINK" — a peça que faltava
+ * ---------------------------------------------------------------------
+ * No site, clicar no link do convite JÁ É a entrada — o navegador abre
+ * aquela URL, com a chave da sala no fragmento (#), e o próprio site lê
+ * isso e entra sozinho. O app não tem barra de endereço nenhuma: sempre
+ * abre a MESMA tela inicial. Sem um jeito de "colar o link aqui dentro",
+ * quem só tem o app nunca consegue entrar na sala de ninguém.
+ *
+ * O botão flutuante chama uma janelinha (preload separado, mesmo padrão
+ * do seletor de tela) que pede o link colado e manda a janela principal
+ * navegar pra ele — validando que é mesmo do nosso site antes, pra não
+ * virar um jeito de abrir qualquer coisa dentro do app.
+ * ------------------------------------------------------------------ */
+function injetarBotaoDeLink(){
+  janelaPrincipal.webContents.insertCSS(`
+    #bigas-botao-link{
+      position:fixed; left:16px; bottom:16px; z-index:999999;
+      background:#171a21; color:#eef1f6; border:1px solid #2a2f3a;
+      border-radius:22px; padding:9px 16px; font:600 12.5px system-ui,sans-serif;
+      cursor:pointer; box-shadow:0 8px 22px rgba(0,0,0,.4);
+    }
+    #bigas-botao-link:hover{ background:#1d212a; border-color:#0891b2 }
+  `);
+  janelaPrincipal.webContents.executeJavaScript(`
+    (function(){
+      if (document.getElementById('bigas-botao-link')) return;
+      var b = document.createElement('button');
+      b.id = 'bigas-botao-link'; b.type = 'button';
+      b.textContent = '🔗 Entrar com um link';
+      b.onclick = function(){ window.bigasApp.abrirColarLink(); };
+      document.body.appendChild(b);
+    })();
+  `).catch(() => {});
+}
+
+function abrirColarLink(){
+  const janela = new BrowserWindow({
+    width: 480,
+    height: 240,
+    parent: janelaPrincipal,
+    modal: true,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: 'Entrar com um link',
+    backgroundColor: '#121419',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+  janela.loadFile('colar-link.html');
+}
+
+function ligarEntradaPorLink(){
+  ipcMain.on('colar-link:abrir', () => abrirColarLink());
+  ipcMain.on('colar-link:entrar', (ev, url) => {
+    let valido = false;
+    try { valido = new URL(url).origin === new URL(SITE).origin; } catch { valido = false; }
+    if (valido) {
+      janelaPrincipal.loadURL(url);
+      const janela = BrowserWindow.fromWebContents(ev.sender);
+      if (janela && !janela.isDestroyed()) janela.close();
+    }
+    ev.returnValue = valido;
   });
 }
 
@@ -168,6 +243,7 @@ function ligarAtualizacaoAutomatica(){
 app.whenReady().then(() => {
   ligarPermissoes();
   ligarSeletorDeTela();
+  ligarEntradaPorLink();
   criarJanelaPrincipal();
   ligarAtualizacaoAutomatica();
 
