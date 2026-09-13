@@ -476,16 +476,21 @@ window.addEventListener('resize', mandarRectDoPainel);
 /* =====================================================================
  * VERSÃO E ATUALIZAÇÃO (o botão faz o processo inteiro)
  * =================================================================== */
-ponte.versao().then((v) => { $('versao').textContent = 'v' + v; }).catch(() => {});
+ponte.versao().then((v) => {
+  document.querySelectorAll('.versao').forEach((el) => { el.textContent = 'v' + v; });
+}).catch(() => {});
 
-(function botaoAtualizar(){
-  const b = $('btn-atualizar');
-  const barra = b.querySelector('.barra');
-  const rotulo = b.querySelector('span');
+/* Dois botões (um na tela de login, um no rodapé da casa), UM estado:
+   o que o processo principal conta vale pros dois ao mesmo tempo. */
+(function botoesAtualizar(){
+  const botoes = [...document.querySelectorAll('.btn-atualizar')];
+  let atual = 'ocioso';
   let voltar = null;
-  function estado(nome, extra){
-    clearTimeout(voltar);
-    b.className = ''; b.disabled = false;
+
+  function pintar(b, nome, extra){
+    const barra = b.querySelector('.barra');
+    const rotulo = b.querySelector('span:last-child');
+    b.className = 'btn-atualizar'; b.disabled = false;
     barra.style.transform = 'scaleX(0)';
     const g = b.querySelector('.girando'); if (g) g.remove();
     if (nome === 'ocioso') rotulo.textContent = '🔄 Verificar atualização';
@@ -494,28 +499,37 @@ ponte.versao().then((v) => { $('versao').textContent = 'v' + v; }).catch(() => {
       const s = document.createElement('span'); s.className = 'girando'; b.insertBefore(s, rotulo);
       rotulo.textContent = 'Procurando atualização…';
     } else if (nome === 'baixando') {
-      b.className = 'achou'; b.disabled = true;
+      b.className = 'btn-atualizar achou'; b.disabled = true;
       const pc = (extra && extra.percentual) || 0;
       barra.style.transform = 'scaleX(' + (pc / 100) + ')';
       rotulo.textContent = 'Baixando… ' + Math.round(pc) + '%';
     } else if (nome === 'pronto') {
-      b.className = 'pronto';
+      b.className = 'btn-atualizar pronto';
       rotulo.textContent = '🔁 Reiniciar e atualizar agora';
     } else if (nome === 'atualizado') {
       rotulo.textContent = '✅ Já está na versão mais nova';
-      voltar = setTimeout(() => estado('ocioso'), 3500);
     } else if (nome === 'erro') {
       rotulo.textContent = '⚠️ Não consegui checar agora';
-      voltar = setTimeout(() => estado('ocioso'), 4000);
     }
   }
+
+  function estado(nome, extra){
+    clearTimeout(voltar);
+    atual = nome;
+    botoes.forEach((b) => pintar(b, nome, extra));
+    if (nome === 'atualizado') voltar = setTimeout(() => estado('ocioso'), 3500);
+    if (nome === 'erro') voltar = setTimeout(() => estado('ocioso'), 4000);
+  }
+
   estado('ocioso');
-  b.onclick = () => {
-    if (b.className === 'pronto') {
-      if (call.estado !== 'nenhuma' && !confirm('Atualizar agora encerra a chamada. Continuar?')) return;
-      ponte.instalarAtualizacao(); return;
-    }
-    ponte.verificarAtualizacao();
-  };
+  botoes.forEach((b) => {
+    b.onclick = () => {
+      if (atual === 'pronto') {
+        if (call.estado !== 'nenhuma' && !confirm('Atualizar agora encerra a chamada. Continuar?')) return;
+        ponte.instalarAtualizacao(); return;
+      }
+      ponte.verificarAtualizacao();
+    };
+  });
   ponte.aoMudarEstadoAtualizacao((d) => estado(d.estado, d));
 })();

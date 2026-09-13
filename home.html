@@ -66,6 +66,11 @@
   label{ display:block; font-size:12px; color:var(--txt2); margin-bottom:5px }
   .botoes-login{ display:flex; gap:9px; margin-top:4px }
   .botoes-login button{ flex:1 }
+  .pe-login{
+    margin-top:10px; padding-top:12px; border-top:1px solid var(--linha);
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .pe-login .versao{ font-size:11px; color:var(--txt3); text-align:center }
 
   /* ================= CASA ================= */
   #tela-casa{ display:none; flex:1; min-width:0 }
@@ -163,22 +168,22 @@
   .eu .sair{ width:32px; height:32px; border-radius:8px; color:var(--txt3); font-size:15px; display:flex; align-items:center; justify-content:center }
   .eu .sair:hover{ background:var(--sup3); color:var(--txt) }
 
-  #btn-atualizar{
+  .btn-atualizar{
     position:relative; overflow:hidden; width:100%; padding:9px 12px; font-size:12.5px;
     background:var(--sup3); border:1px solid var(--linha2); color:var(--txt2);
     display:flex; align-items:center; justify-content:center; gap:8px;
   }
-  #btn-atualizar:hover:not(:disabled){ color:var(--txt); border-color:var(--azul) }
-  #btn-atualizar.achou{ border-color:var(--azul) }
-  #btn-atualizar.pronto{ background:var(--verde); border-color:var(--verde); color:#0c0d10; font-weight:700 }
-  #btn-atualizar.pronto:hover{ background:#59d98d }
-  #btn-atualizar:disabled{ opacity:.9 }
-  #btn-atualizar .barra{
+  .btn-atualizar:hover:not(:disabled){ color:var(--txt); border-color:var(--azul) }
+  .btn-atualizar.achou{ border-color:var(--azul) }
+  .btn-atualizar.pronto{ background:var(--verde); border-color:var(--verde); color:#0c0d10; font-weight:700 }
+  .btn-atualizar.pronto:hover{ background:#59d98d }
+  .btn-atualizar:disabled{ opacity:.9 }
+  .btn-atualizar .barra{
     position:absolute; inset:0; background:var(--azul); z-index:0;
     transform-origin:left; transform:scaleX(0); transition:transform .25s linear;
   }
-  #btn-atualizar span{ position:relative; z-index:1; white-space:nowrap }
-  #btn-atualizar .girando{ position:relative; z-index:1; width:12px; height:12px }
+  .btn-atualizar span{ position:relative; z-index:1; white-space:nowrap }
+  .btn-atualizar .girando{ position:relative; z-index:1; width:12px; height:12px }
 
   /* ================= PAINEL ================= */
   .painel{
@@ -244,6 +249,10 @@
         <button id="btn-entrar" class="b-azul" type="button">Entrar</button>
         <button id="btn-criar" class="b-cinza" type="button">Criar conta</button>
       </div>
+      <div class="pe-login">
+        <span class="versao" id="versao-login">aplicativo</span>
+        <button class="btn-atualizar" id="btn-atualizar-login" type="button"><div class="barra"></div><span>🔄 Verificar atualização</span></button>
+      </div>
     </div>
   </div>
 
@@ -302,7 +311,7 @@
           </div>
           <button class="sair" id="btn-sair-conta" type="button" title="Sair da conta">⏻</button>
         </div>
-        <button id="btn-atualizar" type="button"><div class="barra"></div><span>🔄 Verificar atualização</span></button>
+        <button class="btn-atualizar" id="btn-atualizar" type="button"><div class="barra"></div><span>🔄 Verificar atualização</span></button>
       </div>
     </div>
 
