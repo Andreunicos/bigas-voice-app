@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",

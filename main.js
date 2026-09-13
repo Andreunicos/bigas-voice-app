@@ -18,7 +18,7 @@
  * tela sem o teto de fps, e áudio isolado por programa. Isso exige código
  * nativo de verdade, e essa etapa aqui é só o alicerce.
  * ================================================================== */
-const { app, BrowserWindow, session, desktopCapturer, ipcMain } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 
@@ -71,22 +71,44 @@ function criarJanelaPrincipal(){
  * ------------------------------------------------------------------ */
 function injetarBotaoDeLink(){
   janelaPrincipal.webContents.insertCSS(`
-    #bigas-botao-link{
+    #bigas-botoes-app{
       position:fixed; left:16px; bottom:16px; z-index:999999;
+      display:flex; gap:8px;
+    }
+    #bigas-botoes-app button{
       background:#171a21; color:#eef1f6; border:1px solid #2a2f3a;
       border-radius:22px; padding:9px 16px; font:600 12.5px system-ui,sans-serif;
       cursor:pointer; box-shadow:0 8px 22px rgba(0,0,0,.4);
     }
-    #bigas-botao-link:hover{ background:#1d212a; border-color:#0891b2 }
+    #bigas-botoes-app button:hover{ background:#1d212a; border-color:#0891b2 }
+    #bigas-botoes-app button:disabled{ opacity:.6; cursor:default }
   `);
   janelaPrincipal.webContents.executeJavaScript(`
     (function(){
-      if (document.getElementById('bigas-botao-link')) return;
-      var b = document.createElement('button');
-      b.id = 'bigas-botao-link'; b.type = 'button';
-      b.textContent = '🔗 Entrar com um link';
-      b.onclick = function(){ window.bigasApp.abrirColarLink(); };
-      document.body.appendChild(b);
+      if (document.getElementById('bigas-botoes-app')) return;
+      var caixa = document.createElement('div');
+      caixa.id = 'bigas-botoes-app';
+
+      var bLink = document.createElement('button');
+      bLink.type = 'button';
+      bLink.textContent = '🔗 Entrar com um link';
+      bLink.onclick = function(){ window.bigasApp.abrirColarLink(); };
+
+      var bAtualizar = document.createElement('button');
+      bAtualizar.type = 'button';
+      bAtualizar.textContent = '🔄 Verificar atualização';
+      bAtualizar.onclick = function(){
+        bAtualizar.disabled = true;
+        bAtualizar.textContent = '🔄 Checando...';
+        window.bigasApp.verificarAtualizacao();
+        setTimeout(function(){
+          bAtualizar.disabled = false;
+          bAtualizar.textContent = '🔄 Verificar atualização';
+        }, 8000); // se a resposta demorar mais que isso, o botão libera de novo sozinho
+      };
+
+      caixa.append(bLink, bAtualizar);
+      document.body.appendChild(caixa);
     })();
   `).catch(() => {});
 }
@@ -221,16 +243,47 @@ function ligarSeletorDeTela(){
  * a captura nativa. Fonte: GitHub Releases deste mesmo repositório,
  * publicado com "npm run publicar".
  * ------------------------------------------------------------------ */
+/* ---- estado da atualização, pra o botão manual saber o que fazer ---- */
+let atualizacaoPronta = false;   // já baixou, só falta reiniciar pra valer
+let verificandoNaMao = false;    // a pessoa clicou no botão — dar retorno visível
+
+function fecharAtualizarEAbrir(){
+  dialog.showMessageBox(janelaPrincipal, {
+    type: 'info', title: 'Bigas Voice',
+    message: 'Atualização baixada. O Bigas Voice vai fechar e abrir de novo, já atualizado.',
+    buttons: ['Ok'],
+  }).then(() => autoUpdater.quitAndInstall());
+}
+
 function ligarAtualizacaoAutomatica(){
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('update-downloaded', () => {
+    atualizacaoPronta = true;
     // instala sozinho na próxima vez que o app fechar — sem interromper
-    // quem está no meio de uma call
-    autoUpdater.autoInstallOnAppQuit = true;
+    // quem está no meio de uma call. Mas se foi a PESSOA que pediu pra
+    // checar agora (clicou no botão), ela está esperando ver algo
+    // acontecer — não faz sentido fazer ela esperar fechar sozinha depois.
+    if (verificandoNaMao) { verificandoNaMao = false; fecharAtualizarEAbrir(); }
+  });
+  autoUpdater.on('update-not-available', () => {
+    if (verificandoNaMao) {
+      verificandoNaMao = false;
+      dialog.showMessageBox(janelaPrincipal, {
+        type: 'info', title: 'Bigas Voice',
+        message: 'Você já está na versão mais recente.',
+      });
+    }
   });
   autoUpdater.on('error', (erro) => {
+    if (verificandoNaMao) {
+      verificandoNaMao = false;
+      dialog.showMessageBox(janelaPrincipal, {
+        type: 'error', title: 'Bigas Voice',
+        message: 'Não consegui checar agora (sem internet, ou nenhuma versão publicada ainda).',
+      });
+    }
     console.error('atualização automática falhou (não é crítico):', erro);
   });
 
@@ -240,10 +293,23 @@ function ligarAtualizacaoAutomatica(){
   });
 }
 
+/* O botão "Verificar atualização" na tela: se já tem uma baixada e
+   esperando (aconteceu de fundo, sem a pessoa pedir), instala na hora.
+   Senão, dispara uma checagem nova e avisa o resultado — "já está
+   atualizado" ou baixa e instala, sempre com retorno visível dessa vez. */
+function ligarVerificacaoManual(){
+  ipcMain.on('atualizar:verificar', () => {
+    if (atualizacaoPronta) { fecharAtualizarEAbrir(); return; }
+    verificandoNaMao = true;
+    autoUpdater.checkForUpdates().catch(() => { verificandoNaMao = false; });
+  });
+}
+
 app.whenReady().then(() => {
   ligarPermissoes();
   ligarSeletorDeTela();
   ligarEntradaPorLink();
+  ligarVerificacaoManual();
   criarJanelaPrincipal();
   ligarAtualizacaoAutomatica();
 
