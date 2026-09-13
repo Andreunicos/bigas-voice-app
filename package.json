@@ -38,7 +38,8 @@
     "publish": {
       "provider": "github",
       "owner": "Andreunicos",
-      "repo": "bigas-voice-app"
+      "repo": "bigas-voice-app",
+      "releaseType": "release"
     }
   }
 }
