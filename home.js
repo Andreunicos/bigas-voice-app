@@ -684,7 +684,7 @@ $('chat-texto').addEventListener('input', ajustarAltura);
 /* lateral: chat OU ajustes */
 function mostrarLateral(qual){
   $('lateral').classList.add('mostra');
-  ['sec-chat', 'sec-ajustes'].forEach((id) => $(id).classList.toggle('mostra', id === qual));
+  ['sec-chat'].forEach((id) => $(id).classList.toggle('mostra', id === qual));
   mandarRectDoPalco();
 }
 function fecharLateral(){
@@ -1003,40 +1003,174 @@ new ResizeObserver(mandarRectDoPalco).observe($('palco'));
 window.addEventListener('resize', mandarRectDoPalco);
 
 /* =====================================================================
- * AJUSTES
+ * AJUSTES — tela cheia do app. A call (se houver) fica escondida enquanto
+ * isto está aberto, mas continua rodando; volta ao fechar.
  * =================================================================== */
-$('btn-ajustes').onclick = () => {
-  if ($('sec-ajustes').classList.contains('mostra')) { fecharLateral(); return; }
-  pintarAjustes();
+const QUALIDADES = [
+  { id: 'auto',       titulo: 'Automático',     sub: 'Mede sua máquina e escolhe. Recomendado.' },
+  { id: '1080-60-8',  titulo: '1080p · 60 fps', sub: 'Jogo rápido, monitor 1080p. ~8 Mbps.' },
+  { id: '1080-30-5',  titulo: '1080p · 30 fps', sub: 'Nítido, gasta menos. ~5 Mbps.' },
+  { id: '1440-60-14', titulo: '1440p · 60 fps', sub: 'Só com placa e internet fortes. ~14 Mbps.' },
+  { id: '720-30-3',   titulo: '720p · 30 fps',  sub: 'Internet fraca. ~3 Mbps.' },
+  { id: '480-120-5',  titulo: '480p · 120 fps', sub: 'Fluidez acima de tudo, imagem pequena.' },
+];
+
+const medidor = { stream: null, ctx: null, quadro: null };
+
+function abrirAjustes(secao){
+  $('tela-ajustes').classList.add('mostra');
+  ponte.viewVisivel(false);
+  irParaSecao(secao || 'conta');
+  carregarConfig().then(() => { pintarAjustes(); listarDispositivos(); });
   lerJogosJanela();
-  mostrarLateral('sec-ajustes');
-};
-$('btn-fechar-ajustes').onclick = () => { fecharLateral(); if (chat.com) mostrarLateral('sec-chat'); };
+  pintarBloqueados();
+}
+function fecharAjustes(){
+  $('tela-ajustes').classList.remove('mostra');
+  pararMedidor();
+  ponte.viewVisivel(true);
+}
+function irParaSecao(nome){
+  document.querySelectorAll('.aj-nav button[data-sec]').forEach((b) => b.classList.toggle('ativa', b.dataset.sec === nome));
+  document.querySelectorAll('.aj-corpo section[data-sec]').forEach((sec) => sec.classList.toggle('mostra', sec.dataset.sec === nome));
+  if (nome === 'voz') ligarMedidor(); else pararMedidor();
+}
+$('btn-ajustes').onclick = () => { if ($('tela-ajustes').classList.contains('mostra')) fecharAjustes(); else abrirAjustes(); };
+$('btn-fechar-ajustes').onclick = fecharAjustes;
+document.querySelectorAll('.aj-nav button[data-sec]').forEach((b) => { b.onclick = () => irParaSecao(b.dataset.sec); });
+window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && $('tela-ajustes').classList.contains('mostra') && !capturandoTecla) fecharAjustes(); });
+$('btn-sair-conta-aj').onclick = () => { fecharAjustes(); $('btn-sair-conta').click(); };
 
 async function carregarConfig(){
   try { config = await ponte.configLer(); } catch { config = {}; }
-  pintarAjustes();
 }
-function pintarAjustes(){
-  $('chave-bandeja').classList.toggle('on', !!config.bandeja);
-  $('chave-iniciar').classList.toggle('on', !!config.iniciarComWindows);
-  $('tecla-mic').textContent = bonitinho(config.atalhoMic);
-  $('tecla-surdo').textContent = bonitinho(config.atalhoSurdo);
-  // bloqueados moram nos ajustes
-  if (!$('lista-bloqueados')) {
-    const corpo = $('sec-ajustes').querySelector('.ajustes-corpo');
-    const sec = document.createElement('div'); sec.className = 'secao-ajuste'; sec.textContent = 'Bloqueados';
-    const lista = document.createElement('div'); lista.id = 'lista-bloqueados'; lista.style.display = 'flex'; lista.style.flexDirection = 'column'; lista.style.gap = '8px';
-    corpo.append(sec, lista);
-  }
-  pintarBloqueados();
-}
-function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
 async function mudarConfig(mudancas){
   try { config = await ponte.configMudar(mudancas); } catch (e) { recado('Não consegui salvar o ajuste.', 'mal'); }
   pintarAjustes();
+  // já numa call: vale agora, sem reiniciar nada
+  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec'].some((k) => k in mudancas)) ponte.reaplicar();
 }
+
+function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
+
+function pintarAjustes(){
+  $('chave-bandeja').classList.toggle('on', !!config.bandeja);
+  $('chave-iniciar').classList.toggle('on', !!config.iniciarComWindows);
+  $('chave-limpar').classList.toggle('on', config.limpar !== false);
+  $('chave-som-tela').classList.toggle('on', config.somDaTela !== false);
+  $('tecla-mic').textContent = bonitinho(config.atalhoMic);
+  $('tecla-surdo').textContent = bonitinho(config.atalhoSurdo);
+  $('tecla-ptt').textContent = config.nomeTeclaPtt || 'V';
+  document.querySelectorAll('.cartao[data-fala]').forEach((c) => c.classList.toggle('escolhido', (config.fala || 'voz') === c.dataset.fala));
+  $('linha-ptt').style.display = config.fala === 'ptt' ? '' : 'none';
+  const vol = Number.isFinite(Number(config.volume)) ? Number(config.volume) : 100;
+  $('vol-app').value = vol; $('vol-app-txt').textContent = vol + '%';
+  $('sel-codec-app').value = config.codec || 'auto';
+  const cx = $('cartoes-qualidade');
+  if (!cx.children.length) QUALIDADES.forEach((q) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'cartao'; b.dataset.q = q.id;
+    const t = document.createElement('b'); t.textContent = q.titulo; const sm = document.createElement('small'); sm.textContent = q.sub;
+    b.append(t, sm); b.onclick = () => mudarConfig({ qualidade: q.id }); cx.appendChild(b);
+  });
+  cx.querySelectorAll('.cartao').forEach((c) => c.classList.toggle('escolhido', (config.qualidade || 'auto') === c.dataset.q));
+  if ($('sel-mic-app').options.length > 1) $('sel-mic-app').value = config.micRotulo || '';
+  if ($('sel-saida-app').options.length > 1) $('sel-saida-app').value = config.saidaRotulo || '';
+}
+
+/* ---- dispositivos (por NOME: o id muda de site pra site) ---- */
+async function listarDispositivos(){
+  let ds = [];
+  try { ds = await navigator.mediaDevices.enumerateDevices(); } catch { ds = []; }
+  const semNome = ds.some((d) => (d.kind === 'audioinput' || d.kind === 'audiooutput') && !d.label);
+  if (semNome && !medidor.stream) {
+    // os nomes só aparecem depois que o app usou o microfone uma vez
+    try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach((t) => t.stop()); ds = await navigator.mediaDevices.enumerateDevices(); }
+    catch (e) { $('aviso-mic').hidden = false; $('aviso-mic').textContent = 'Não consegui acessar o microfone (' + (e && e.name || 'erro') + '). Confere em Windows › Privacidade › Microfone.'; }
+  }
+  const encher = (sel, tipo, atual) => {
+    const vistos = new Set();
+    sel.innerHTML = '<option value="">Padrão do Windows</option>';
+    ds.filter((d) => d.kind === tipo && d.label && d.deviceId !== 'default' && d.deviceId !== 'communications').forEach((d) => {
+      if (vistos.has(d.label)) return; vistos.add(d.label);
+      const o = document.createElement('option'); o.value = d.label; o.textContent = d.label; sel.appendChild(o);
+    });
+    sel.value = vistos.has(atual) ? atual : '';
+  };
+  encher($('sel-mic-app'), 'audioinput', config.micRotulo || '');
+  encher($('sel-saida-app'), 'audiooutput', config.saidaRotulo || '');
+}
+navigator.mediaDevices.addEventListener('devicechange', () => { if ($('tela-ajustes').classList.contains('mostra')) listarDispositivos(); });
+
+$('sel-mic-app').onchange = async () => { await mudarConfig({ micRotulo: $('sel-mic-app').value }); ligarMedidor(true); };
+$('sel-saida-app').onchange = () => mudarConfig({ saidaRotulo: $('sel-saida-app').value });
+
+/* medidor de nível do microfone (só enquanto a aba Voz está aberta) */
+async function ligarMedidor(reiniciar){
+  if (medidor.stream && !reiniciar) return;
+  pararMedidor();
+  try{
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    const mic = ds.find((d) => d.kind === 'audioinput' && d.label === (config.micRotulo || '—'));
+    const audioC = mic ? { deviceId: { exact: mic.deviceId } } : true;
+    medidor.stream = await navigator.mediaDevices.getUserMedia({ audio: audioC });
+    medidor.ctx = new AudioContext();
+    const src = medidor.ctx.createMediaStreamSource(medidor.stream);
+    const an = medidor.ctx.createAnalyser(); an.fftSize = 1024; src.connect(an);
+    const buf = new Float32Array(an.fftSize);
+    const passo = () => {
+      if (!medidor.ctx) return;
+      an.getFloatTimeDomainData(buf);
+      let soma = 0; for (let i = 0; i < buf.length; i++) soma += buf[i] * buf[i];
+      const rms = Math.sqrt(soma / buf.length);
+      const pct = Math.min(100, Math.round(Math.sqrt(rms) * 140));
+      $('nivel-mic').style.width = pct + '%';
+      medidor.quadro = requestAnimationFrame(passo);
+    };
+    passo();
+    $('aviso-mic').hidden = true;
+  }catch(e){
+    $('aviso-mic').hidden = false;
+    $('aviso-mic').textContent = 'Não consegui abrir esse microfone (' + (e && e.name || 'erro') + ').';
+  }
+}
+function pararMedidor(){
+  if (medidor.quadro) cancelAnimationFrame(medidor.quadro); medidor.quadro = null;
+  if (medidor.stream) { medidor.stream.getTracks().forEach((t) => t.stop()); medidor.stream = null; }
+  if (medidor.ctx) { medidor.ctx.close().catch(() => {}); medidor.ctx = null; }
+  $('nivel-mic').style.width = '0';
+}
+
+/* testar a saída: duas notas pelo aparelho escolhido */
+$('btn-testar-saida').onclick = async () => {
+  const b = $('btn-testar-saida'); b.disabled = true;
+  try{
+    const ctx = new AudioContext();
+    const rotulo = $('sel-saida-app').value;
+    if (rotulo && typeof ctx.setSinkId === 'function') {
+      const ds = await navigator.mediaDevices.enumerateDevices();
+      const d = ds.find((x) => x.kind === 'audiooutput' && x.label === rotulo);
+      if (d) await ctx.setSinkId(d.deviceId).catch(() => {});
+    }
+    const t = ctx.currentTime;
+    [[523, 0], [659, 0.18], [784, 0.36]].forEach(([f, dt]) => {
+      const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0, t + dt); g.gain.linearRampToValueAtTime(0.25, t + dt + 0.02); g.gain.linearRampToValueAtTime(0, t + dt + 0.3);
+      o.connect(g).connect(ctx.destination); o.start(t + dt); o.stop(t + dt + 0.32);
+    });
+    setTimeout(() => { ctx.close().catch(() => {}); b.disabled = false; }, 900);
+  }catch(e){ recado('Não consegui tocar nesse aparelho.', 'mal'); b.disabled = false; }
+};
+
+/* voz: modo, tecla de falar, limpeza, volume, compressão, som da tela, janela */
+document.querySelectorAll('.cartao[data-fala]').forEach((c) => { c.onclick = () => mudarConfig({ fala: c.dataset.fala }); });
+$('chave-limpar').onclick = () => mudarConfig({ limpar: config.limpar === false });
+$('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela === false });
 $('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
+$('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
+$('sel-codec-app').onchange = () => mudarConfig({ codec: $('sel-codec-app').value });
+$('vol-app').oninput = () => { $('vol-app-txt').textContent = $('vol-app').value + '%'; };
+$('vol-app').onchange = () => mudarConfig({ volume: Number($('vol-app').value) });
+
 let jogosJanela = null;
 async function lerJogosJanela(){
   try { jogosJanela = await ponte.jogosJanela(); } catch { jogosJanela = null; }
@@ -1048,38 +1182,58 @@ $('chave-jogos').onclick = async () => {
   $('chave-jogos').classList.toggle('on', jogosJanela === true);
   recado(jogosJanela ? 'Ligada. Reabre o jogo pra valer.' : 'Desligada. Reabre o jogo pra valer.', jogosJanela ? 'bem' : '');
 };
-$('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
 
-// captura de tecla → acelerador do Electron ("Control+Shift+M")
-function ligarCapturaDeTecla(botao, chave){
+/* captura de tecla: atalhos globais (acelerador do Electron) e tecla de falar (código do teclado) */
+let capturandoTecla = false;
+function ligarCapturaDeTecla(botao, aoTerminar, precisaModificador){
   botao.onclick = () => {
-    botao.classList.add('gravando'); botao.textContent = 'aperta a combinação…';
+    if (capturandoTecla) return;
+    capturandoTecla = true;
+    botao.classList.add('gravando'); botao.textContent = 'aperta a tecla…';
     const ouvir = (ev) => {
-      ev.preventDefault();
+      ev.preventDefault(); ev.stopPropagation();
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) return; // só modificador: espera a tecla
       window.removeEventListener('keydown', ouvir, true);
-      botao.classList.remove('gravando');
+      botao.classList.remove('gravando'); capturandoTecla = false;
       if (ev.key === 'Escape') { pintarAjustes(); return; }
-      const partes = [];
-      if (ev.ctrlKey) partes.push('Control');
-      if (ev.altKey) partes.push('Alt');
-      if (ev.shiftKey) partes.push('Shift');
-      let k = ev.key;
-      if (k === ' ') k = 'Space';
-      else if (/^[a-z]$/i.test(k)) k = k.toUpperCase();
-      else if (/^F\d{1,2}$/.test(k) || /^\d$/.test(k)) { /* serve como está */ }
-      else if (ev.code.startsWith('Numpad')) k = 'num' + ev.code.slice(6).toLowerCase();
-      else { recado('Essa tecla não dá pra usar como atalho. Tenta letra, número ou F1–F12.', 'mal'); pintarAjustes(); return; }
-      partes.push(k);
-      if (partes.length === 1) { recado('Usa junto com Ctrl, Alt ou Shift — senão a tecla some do jogo.', 'mal'); pintarAjustes(); return; }
-      mudarConfig({ [chave]: partes.join('+') });
+      aoTerminar(ev);
     };
     window.addEventListener('keydown', ouvir, true);
   };
 }
-ligarCapturaDeTecla($('tecla-mic'), 'atalhoMic');
-ligarCapturaDeTecla($('tecla-surdo'), 'atalhoSurdo');
-carregarConfig();
+function aceleradorDe(ev){
+  const partes = [];
+  if (ev.ctrlKey) partes.push('Control');
+  if (ev.altKey) partes.push('Alt');
+  if (ev.shiftKey) partes.push('Shift');
+  let k = ev.key;
+  if (k === ' ') k = 'Space';
+  else if (/^[a-z]$/i.test(k)) k = k.toUpperCase();
+  else if (/^F\d{1,2}$/.test(k) || /^\d$/.test(k)) { /* serve como está */ }
+  else if (ev.code.startsWith('Numpad')) k = 'num' + ev.code.slice(6).toLowerCase();
+  else return null;
+  partes.push(k);
+  return partes;
+}
+ligarCapturaDeTecla($('tecla-mic'), (ev) => {
+  const p = aceleradorDe(ev);
+  if (!p) { recado('Essa tecla não dá pra usar como atalho. Tenta letra, número ou F1–F12.', 'mal'); pintarAjustes(); return; }
+  if (p.length === 1) { recado('Usa junto com Ctrl, Alt ou Shift — senão a tecla some do jogo.', 'mal'); pintarAjustes(); return; }
+  mudarConfig({ atalhoMic: p.join('+') });
+});
+ligarCapturaDeTecla($('tecla-surdo'), (ev) => {
+  const p = aceleradorDe(ev);
+  if (!p) { recado('Essa tecla não dá pra usar como atalho. Tenta letra, número ou F1–F12.', 'mal'); pintarAjustes(); return; }
+  if (p.length === 1) { recado('Usa junto com Ctrl, Alt ou Shift — senão a tecla some do jogo.', 'mal'); pintarAjustes(); return; }
+  mudarConfig({ atalhoSurdo: p.join('+') });
+});
+ligarCapturaDeTecla($('tecla-ptt'), (ev) => {
+  // a tecla de falar é do SITE (dentro da call): guarda o código e o nome, como ele faz
+  const nome = ev.key.length === 1 ? ev.key.toUpperCase() : ev.key;
+  mudarConfig({ teclaPtt: ev.code, nomeTeclaPtt: nome });
+});
+
+carregarConfig().then(pintarAjustes);
 
 /* =====================================================================
  * VERSÃO E ATUALIZAÇÃO (o botão faz o processo inteiro)

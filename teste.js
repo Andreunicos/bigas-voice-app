@@ -102,7 +102,7 @@ app.whenReady().then(async () => {
 
   // versão e botão de atualizar nos DOIS lugares (login e casa), um estado só
   const vers = await js('[...document.querySelectorAll(".versao")].map(e=>e.textContent).join("|")');
-  ok('versao mostrada no login E na casa', /^v[\d.]+\|v[\d.]+$/.test(vers), vers);
+  ok('versao mostrada no login, na casa E nos ajustes', /^v[\d.]+(\|v[\d.]+){2,}$/.test(vers), vers);
   janela.webContents.send('atualizar:estado', { estado: 'baixando', percentual: 42 });
   await espera(300);
   const bts = await js('[...document.querySelectorAll(".btn-atualizar")].map(b=>b.className+"/"+b.querySelector("span:last-child").textContent).join(" || ")');
@@ -192,14 +192,42 @@ app.whenReady().then(async () => {
     ]);
     ok('transmitir de novo depois de cancelar FUNCIONA (sem ouvinte vazado)', denovo === 'ABRIU', denovo);
 
-    // a lateral (chat/ajustes) abre → o palco encolhe → a view acompanha
+    // AJUSTES em tela cheia: a call some da tela (mas continua) e volta ao fechar
     await js('document.getElementById("btn-ajustes").click(); true');
+    await espera(900);
+    ok('ajustes abrem em tela cheia', await js('document.getElementById("tela-ajustes").classList.contains("mostra")'));
+    ok('a call fica escondida enquanto os ajustes estão abertos', view.getVisible() === false);
+    await js('document.querySelector(".aj-nav button[data-sec=voz]").click(); true');
+    await espera(1500);
+    const disp = JSON.parse(await js('JSON.stringify({ mics: document.getElementById("sel-mic-app").options.length, saidas: document.getElementById("sel-saida-app").options.length, nivel: document.getElementById("nivel-mic").style.width, aviso: document.getElementById("aviso-mic").hidden })'));
+    ok('ajustes listam microfones e saídas COM nome', disp.mics > 1 && disp.saidas > 1, JSON.stringify(disp));
+    await js('document.getElementById("btn-fechar-ajustes").click(); true');
+    await espera(300);
+    ok('fechar os ajustes traz a call de volta', view.getVisible() === true && !(await js('document.getElementById("tela-ajustes").classList.contains("mostra")')));
+
+    // a lateral (chat) abre → o palco encolhe → a view acompanha
+    await js('document.getElementById("lateral").classList.add("mostra"); document.getElementById("sec-chat").classList.add("mostra"); window.dispatchEvent(new Event("resize")); true');
     await espera(500);
     const r2 = JSON.parse(await js('JSON.stringify(document.getElementById("palco").getBoundingClientRect())'));
     const vb2 = view.getBounds();
-    ok('ajustes abertos ao lado: view encolheu junto com o palco', r2.width < r.width - 200 && Math.abs(vb2.width - Math.round(r2.width)) <= 1, vb2.width + ' vs ' + Math.round(r2.width));
-    await js('document.getElementById("btn-fechar-ajustes").click(); true');
+    ok('chat aberto ao lado: view encolheu junto com o palco', r2.width < r.width - 200 && Math.abs(vb2.width - Math.round(r2.width)) <= 1, vb2.width + ' vs ' + Math.round(r2.width));
+    await js('document.getElementById("btn-fechar-chat").click(); true');
     await espera(300);
+
+    // a TELA DE TRANSMITIR: cartões, tela inteira pré-escolhida, qualidade+fps, devolve {id, qualidade, som}
+    const fontesT = await electron.desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 160, height: 90 } });
+    const jt = new RealBW({ show: false, width: 1040, height: 700, webPreferences: { contextIsolation: true, sandbox: true, preload: path.join(APP_DIR, 'preload.js') } });
+    await jt.loadFile('seletor-de-tela.html');
+    jt.webContents.send('seletor-de-tela:fontes', { lista: fontesT.map((f) => ({ id: f.id, nome: f.name, miniatura: f.thumbnail.toDataURL(), ehTela: f.id.startsWith('screen:') })), qualidade: '1080-60-8', som: true });
+    await espera(600);
+    const est = JSON.parse(await jt.webContents.executeJavaScript('JSON.stringify({ cartoes: document.querySelectorAll(".fonte").length, escolhida: document.querySelectorAll(".fonte.escolhida").length, quals: document.querySelectorAll("#qualidades .opcao").length, qualEscolhida: (document.querySelector("#qualidades .opcao.escolhida b")||{}).textContent, ir: !document.getElementById("btn-ir").disabled })'));
+    ok('tela de transmitir: telas em cartões, tela inteira já escolhida, 6 qualidades, botão pronto', est.cartoes >= 1 && est.escolhida === 1 && est.quals === 6 && est.ir === true, JSON.stringify(est));
+    ok('tela de transmitir: veio com a qualidade padrão (1080p 60)', /1080p · 60/.test(est.qualEscolhida || ''), est.qualEscolhida);
+    const escolhaP = new Promise((r) => ipcMain.once('seletor-de-tela:escolheu', (ev, e) => r(e)));
+    await jt.webContents.executeJavaScript('document.querySelectorAll("#qualidades .opcao")[2].click(); document.getElementById("chave-som").click(); document.getElementById("btn-ir").click(); true');
+    const escolha = await Promise.race([escolhaP, espera(3000).then(() => null)]);
+    ok('tela de transmitir devolve {id, qualidade, som}', !!(escolha && escolha.id && escolha.qualidade === '1080-30-5' && escolha.som === false), JSON.stringify(escolha));
+    jt.destroy();
 
     // ===== DUAS PONTAS: um "amigo" entra pelo link numa janela invisível =====
     let avisoConectada = false;

@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('bigasHome', {
   configLer:    ()         => ipcRenderer.invoke('config:ler'),
   configMudar:  (mudancas) => ipcRenderer.invoke('config:mudar', mudancas),
   jogosJanela:  (ligar)    => ipcRenderer.invoke('windows:jogosJanela', ligar),
+  viewVisivel:  (visivel)  => ipcRenderer.send('view:visivel', !!visivel),
+  reaplicar:    ()         => ipcRenderer.send('call:reaplicar'),
   verificarAtualizacao: () => ipcRenderer.send('atualizar:verificar'),
   instalarAtualizacao:  () => ipcRenderer.send('atualizar:instalar'),
   aoMudarEstadoAtualizacao: (funcao) => {
@@ -43,5 +45,5 @@ contextBridge.exposeInMainWorld('bigasSeletor', {
   aoReceberFontes: (funcao) => {
     ipcRenderer.on('seletor-de-tela:fontes', (_ev, lista) => funcao(lista));
   },
-  escolher: (id) => ipcRenderer.send('seletor-de-tela:escolheu', id),
+  escolher: (escolha) => ipcRenderer.send('seletor-de-tela:escolheu', escolha),
 });

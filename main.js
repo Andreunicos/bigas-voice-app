@@ -39,7 +39,20 @@ let saindoDeVerdade = false;  // "Sair" na bandeja / quitAndInstall: ignora "min
  * CONFIGURAÇÃO (fica em userData/config.json; a casa manda mudanças)
  * ------------------------------------------------------------------ */
 const ARQ_CONFIG = () => path.join(app.getPath('userData'), 'config.json');
-let config = { bandeja: false, iniciarComWindows: false, atalhoMic: 'Control+Shift+M', atalhoSurdo: 'Control+Shift+D' };
+let config = {
+  bandeja: false, iniciarComWindows: false,
+  atalhoMic: 'Control+Shift+M', atalhoSurdo: 'Control+Shift+D',
+  // voz / som / transmissão — o app guarda e EMPURRA pra dentro do site na call
+  micRotulo: '',        // nome do microfone (o id muda de site pra site; o nome não)
+  saidaRotulo: '',      // nome da saída de som
+  fala: 'voz',          // 'voz' (aberto) | 'ptt' (segurar pra falar)
+  teclaPtt: 'KeyV', nomeTeclaPtt: 'V',
+  limpar: true,         // cancelamento de eco / ruído no mic
+  volume: 100,          // volume geral dos amigos (0–200)
+  qualidade: 'auto',    // perfil da transmissão (chaves do site: auto, 1080-60-8…)
+  codec: 'auto',
+  somDaTela: true,
+};
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
 }
@@ -344,6 +357,9 @@ function vestirSite(wc){
         };
       }
 
+      // as preferências do app (voz, mic, saída, volume, qualidade…) valem aqui
+      ${scriptPreferencias()}
+
       // encerrar = voltar pra casa (o app fecha a call; o site não recarrega)
       document.addEventListener('click', function(ev){
         var b = ev.target && ev.target.closest && ev.target.closest('#btn-sair');
@@ -390,6 +406,93 @@ function vestirSite(wc){
       espelhar();
     })();
   `).catch(() => {});
+}
+
+/* as preferências do app (voz, mic, saída, volume, qualidade, compressão)
+   empurradas pra dentro do site. Idempotente: roda na primeira carga e de
+   novo quando a pessoa muda algo nos Ajustes durante a call. Mic e saída
+   são achados pelo NOME (o id de dispositivo muda de site pra site). */
+function scriptPreferencias(){
+  const pref = JSON.stringify({
+    fala: config.fala, tecla: config.teclaPtt, nomeTecla: config.nomeTeclaPtt,
+    limpar: !!config.limpar, volume: config.volume, qualidade: config.qualidade,
+    codec: config.codec, micRotulo: config.micRotulo, saidaRotulo: config.saidaRotulo,
+  });
+  return `
+    (function(){
+      try {
+        var pref = ${pref};
+        if (typeof cfg === 'object') {
+          cfg.fala = pref.fala === 'ptt' ? 'ptt' : 'voz';
+          if (pref.tecla) { cfg.tecla = pref.tecla; cfg.nomeTecla = pref.nomeTecla || pref.tecla; }
+          cfg.limpar = pref.limpar;
+          cfg.volume = Math.max(0, Math.min(200, Number(pref.volume) || 100));
+          cfg.qualidade = pref.qualidade || 'auto';
+          cfg.codec = pref.codec || 'auto';
+          if (typeof guardarAjustes === 'function') guardarAjustes();
+          if (typeof aplicarModoFala === 'function') try { aplicarModoFala(); } catch(e){}
+          if (typeof aplicarVolume === 'function') try { aplicarVolume(); } catch(e){}
+          var sq = document.getElementById('sel-qualidade'); if (sq) sq.value = cfg.qualidade;
+          var sc = document.getElementById('sel-codec'); if (sc) sc.value = cfg.codec;
+          var sf = document.getElementById('sel-fala'); if (sf) sf.value = cfg.fala;
+          var sr = document.getElementById('in-ruido'); if (sr) sr.checked = cfg.limpar;
+        }
+        var aplicarSaida = function(el){
+          if (!el || typeof el.setSinkId !== 'function') return;
+          el.setSinkId(window.__bigasSaida || '').catch(function(){});
+        };
+        // todo <audio> que o site criar (a voz de cada pessoa) sai pelo aparelho escolhido
+        if (!window.__bigasObsSaida) {
+          window.__bigasObsSaida = new MutationObserver(function(ms){
+            ms.forEach(function(m){ m.addedNodes.forEach(function(n){ if (n && n.tagName === 'AUDIO') aplicarSaida(n); }); });
+          });
+          window.__bigasObsSaida.observe(document.body, { childList: true, subtree: true });
+        }
+        navigator.mediaDevices.enumerateDevices().then(function(ds){
+          var mic = pref.micRotulo && ds.find(function(d){ return d.kind === 'audioinput' && d.label === pref.micRotulo; });
+          var micId = mic ? mic.deviceId : 'padrao';
+          if (typeof cfg === 'object' && cfg.mic !== micId) {
+            cfg.mic = micId; if (typeof guardarAjustes === 'function') guardarAjustes();
+            // já na call com o mic aberto: troca na hora (o site já faz isso no onchange)
+            var sm = document.getElementById('sel-mic');
+            if (sm && typeof est !== 'undefined' && est.streamMic) {
+              var op = document.createElement('option'); op.value = micId; sm.appendChild(op); sm.value = micId;
+              sm.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+          var sai = pref.saidaRotulo && ds.find(function(d){ return d.kind === 'audiooutput' && d.label === pref.saidaRotulo; });
+          window.__bigasSaida = sai ? sai.deviceId : '';
+          document.querySelectorAll('audio').forEach(aplicarSaida);
+        }).catch(function(){});
+      } catch(e){ console.warn('preferências do app', e); }
+    })();
+  `;
+}
+
+/* depois que a captura existe no site, aplica o perfil escolhido na tela de
+   Transmitir (o site reaplica os limites na faixa e avisa os outros) e corta
+   o som da tela se a pessoa desligou */
+function aplicarNaTransmissao(qualidade, som){
+  if (!viewCall) return;
+  viewCall.webContents.executeJavaScript(`
+    (async function(){
+      for (var i = 0; i < 40; i++) {
+        if (typeof est !== 'undefined' && est.streamTela) break;
+        await new Promise(function(r){ setTimeout(r, 250); });
+      }
+      if (typeof est === 'undefined' || !est.streamTela) return 'sem captura';
+      try {
+        var q = ${JSON.stringify(String(qualidade || 'auto'))};
+        var sel = document.getElementById('sel-qualidade');
+        if (sel && typeof cfg === 'object' && cfg.qualidade !== q) {
+          sel.value = q;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (${som ? 'false' : 'true'} && !est.somDaTelaCortado && typeof alternarSomDaTela === 'function') alternarSomDaTela();
+      } catch(e){ return 'erro ' + e.message; }
+      return 'ok';
+    })()
+  `).then((r) => { if (r !== 'ok') console.warn('aplicar na transmissão:', r); }).catch(() => {});
 }
 
 /* dentro da view: clica no botão do site de criar sala e espera o link */
@@ -458,6 +561,11 @@ function ligarChamadas(){
   });
 
   ipcMain.on('call:sair', () => encerrarCall('saiu'));
+  // Ajustes em tela cheia por cima da call: a view some da tela mas a call
+  // continua (áudio, vídeo, tudo) — e volta quando os Ajustes fecham
+  ipcMain.on('view:visivel', (ev, visivel) => { if (viewCall) { try { viewCall.setVisible(!!visivel); } catch {} } });
+  // mudou mic/saída/voz/volume nos Ajustes durante uma call: aplica agora
+  ipcMain.on('call:reaplicar', () => { if (viewCall) viewCall.webContents.executeJavaScript(scriptPreferencias()).catch(() => {}); });
   ipcMain.on('call:mic', () => acionarNaCall('mic'));
   ipcMain.on('call:surdo', () => acionarNaCall('surdo'));
 
@@ -519,7 +627,8 @@ function ligarChamadas(){
   });
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
-    const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo'];
+    const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
+      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
@@ -536,13 +645,13 @@ function ligarChamadas(){
  * ------------------------------------------------------------------ */
 function ligarPermissoes(){
   const permitido = new Set(['media']);
+  // o site (na call) e as páginas do próprio app (Ajustes testa o mic e a saída)
+  const confiavel = (url) => url.startsWith(SITE) || url.startsWith('file://');
   session.defaultSession.setPermissionRequestHandler((webContents, permissao, callback) => {
-    const origem = webContents.getURL();
-    callback(permitido.has(permissao) && origem.startsWith(SITE));
+    callback(permitido.has(permissao) && confiavel(webContents.getURL()));
   });
   session.defaultSession.setPermissionCheckHandler((webContents, permissao) => {
-    const origem = webContents ? webContents.getURL() : '';
-    return permitido.has(permissao) && origem.startsWith(SITE);
+    return permitido.has(permissao) && confiavel(webContents ? webContents.getURL() : '');
   });
 }
 
@@ -562,8 +671,8 @@ function ligarSeletorDeTela(){
     });
 
     const janelaSeletor = new BrowserWindow({
-      width: 760,
-      height: 560,
+      width: 1040,
+      height: 740,
       parent: janelaPrincipal,
       modal: true,
       resizable: false,
@@ -587,14 +696,16 @@ function ligarSeletorDeTela(){
       id: f.id,
       nome: f.name,
       miniatura: f.thumbnail.toDataURL(),
+      icone: f.appIcon && !f.appIcon.isEmpty() ? f.appIcon.toDataURL() : '',
       ehTela: f.id.startsWith('screen:'),
     }));
 
     let respondido = false;
-    const aoEscolher = (ev, id) => responder(id);
-    const responder = (escolhaId) => {
+    const aoEscolher = (ev, escolha) => responder(escolha);
+    const responder = (escolha) => {
       if(respondido) return;
       respondido = true;
+      const escolhaId = escolha && typeof escolha === 'object' ? escolha.id : escolha;
       // o ouvinte morre junto com o pedido: se ficasse vivo (fechou o seletor
       // sem escolher), ele engoliria a escolha da PRÓXIMA transmissão e o
       // seletor seguinte nunca responderia
@@ -610,6 +721,14 @@ function ligarSeletorDeTela(){
         try{
           if(!escolhida){ callback(); return; }
           callback({ video: escolhida, audio: 'loopback' });
+          // qualidade/fps e som escolhidos NA TELA DE TRANSMITIR: viram o
+          // padrão e são aplicados no site assim que a captura existir
+          if (escolha && typeof escolha === 'object') {
+            if (escolha.qualidade) config.qualidade = String(escolha.qualidade);
+            config.somDaTela = escolha.som !== false;
+            guardarConfig();
+            aplicarNaTransmissao(config.qualidade, config.somDaTela);
+          }
         }catch(e){ console.error('seletor de tela', e); try{ callback(); }catch{} }
       }, 0);
     };
@@ -619,7 +738,7 @@ function ligarSeletorDeTela(){
 
     janelaSeletor.loadFile('seletor-de-tela.html');
     janelaSeletor.webContents.once('did-finish-load', () => {
-      janelaSeletor.webContents.send('seletor-de-tela:fontes', lista);
+      janelaSeletor.webContents.send('seletor-de-tela:fontes', { lista, qualidade: config.qualidade, som: config.somDaTela !== false });
     });
   }, { useSystemPicker: false });
 }
