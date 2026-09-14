@@ -1062,7 +1062,7 @@ async function mudarConfig(mudancas){
   try { config = await ponte.configMudar(mudancas); } catch (e) { recado('Não consegui salvar o ajuste.', 'mal'); }
   pintarAjustes();
   // já numa call: vale agora, sem reiniciar nada
-  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec'].some((k) => k in mudancas)) ponte.reaplicar();
+  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'prioridadeGpu', 'nitidezExtra'].some((k) => k in mudancas)) ponte.reaplicar();
 }
 
 function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
@@ -1072,6 +1072,8 @@ function pintarAjustes(){
   $('chave-iniciar').classList.toggle('on', !!config.iniciarComWindows);
   $('chave-limpar').classList.toggle('on', config.limpar !== false);
   $('chave-som-tela').classList.toggle('on', config.somDaTela !== false);
+  $('chave-gpu').classList.toggle('on', config.prioridadeGpu !== false);
+  $('chave-nitidez').classList.toggle('on', !!config.nitidezExtra);
   $('tecla-mic').textContent = bonitinho(config.atalhoMic);
   $('tecla-surdo').textContent = bonitinho(config.atalhoSurdo);
   $('tecla-ptt').textContent = config.nomeTeclaPtt || 'V';
@@ -1181,6 +1183,8 @@ document.querySelectorAll('.cartao[data-fala]').forEach((c) => { c.onclick = () 
 document.querySelectorAll('.cartao[data-captura]').forEach((c) => { c.onclick = async () => { await mudarConfig({ captura: c.dataset.captura }); recado('Método de captura salvo. Vale na próxima vez que abrir o Bigas Voice.', 'bem'); }; });
 $('chave-limpar').onclick = () => mudarConfig({ limpar: config.limpar === false });
 $('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela === false });
+$('chave-gpu').onclick = () => mudarConfig({ prioridadeGpu: config.prioridadeGpu === false });
+$('chave-nitidez').onclick = () => mudarConfig({ nitidezExtra: !config.nitidezExtra });
 $('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
 $('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
 $('sel-codec-app').onchange = () => mudarConfig({ codec: $('sel-codec-app').value });

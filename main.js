@@ -55,6 +55,7 @@ let config = {
   captura: 'dxgi',      // 'dxgi' (padrão do Chromium) | 'wgc' (Windows Graphics Capture) — vale ao reabrir
   prioridadeCaptura: false, // (CPU) processos do app um degrau acima do normal durante a call — medido: ruído
   prioridadeGpu: true,      // (GPU) fila da placa atende a captura antes do jogo (como o OBS faz) — vale a pena
+  nitidezExtra: false,      // 1,5x de banda pra imagem (site v6.18) — pra quem tem upload sobrando
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
@@ -437,6 +438,7 @@ function scriptPreferencias(){
     fala: config.fala, tecla: config.teclaPtt, nomeTecla: config.nomeTeclaPtt,
     limpar: !!config.limpar, volume: config.volume, qualidade: config.qualidade,
     codec: config.codec, micRotulo: config.micRotulo, saidaRotulo: config.saidaRotulo,
+    nitidezExtra: !!config.nitidezExtra,
   });
   return `
     (function(){
@@ -449,6 +451,12 @@ function scriptPreferencias(){
           cfg.volume = Math.max(0, Math.min(200, Number(pref.volume) || 100));
           cfg.qualidade = pref.qualidade || 'auto';
           cfg.codec = pref.codec || 'auto';
+          if (cfg.nitidezExtra !== pref.nitidezExtra) {
+            cfg.nitidezExtra = pref.nitidezExtra;
+            // já transmitindo: o site reaplica o perfil nos amigos
+            if (typeof pares !== 'undefined' && typeof reequilibrarVideo === 'function') { pares.forEach(function(x){ x.perfilAplicado = null; }); reequilibrarVideo(); }
+          }
+          var sn = document.getElementById('in-nitidez'); if (sn) sn.checked = !!cfg.nitidezExtra;
           if (typeof guardarAjustes === 'function') guardarAjustes();
           if (typeof aplicarModoFala === 'function') try { aplicarModoFala(); } catch(e){}
           if (typeof aplicarVolume === 'function') try { aplicarVolume(); } catch(e){}
@@ -708,7 +716,11 @@ function ligarChamadas(){
   // continua (áudio, vídeo, tudo) — e volta quando os Ajustes fecham
   ipcMain.on('view:visivel', (ev, visivel) => { if (viewCall) { try { viewCall.setVisible(!!visivel); } catch {} } });
   // mudou mic/saída/voz/volume nos Ajustes durante uma call: aplica agora
-  ipcMain.on('call:reaplicar', () => { if (viewCall) viewCall.webContents.executeJavaScript(scriptPreferencias()).catch(() => {}); });
+  ipcMain.on('call:reaplicar', () => {
+    if (!viewCall) return;
+    viewCall.webContents.executeJavaScript(scriptPreferencias()).catch(() => {});
+    if (config.prioridadeGpu) prioridadeGpu(true); else prioridadeGpu(false);
+  });
   ipcMain.on('call:mic', () => acionarNaCall('mic'));
   ipcMain.on('call:surdo', () => acionarNaCall('surdo'));
 
@@ -774,7 +786,7 @@ function ligarChamadas(){
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
-      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu'];
+      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu', 'nitidezExtra'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
@@ -928,6 +940,11 @@ function ligarVerificacaoManual(){
 }
 
 /* ------------------------------------------------------------------ */
+// notebook com duas placas (integrada + dedicada): o Chromium às vezes
+// escolhe a integrada e transmite mal. Força a dedicada pra capturar,
+// codificar e decodificar. Num PC de uma placa só, não muda nada.
+app.commandLine.appendSwitch('force_high_performance_gpu');
+
 // método de captura de tela do Chromium: DXGI (padrão) ou WGC. É uma chave
 // de linha de comando — só vale na próxima abertura do app.
 lerConfig();
