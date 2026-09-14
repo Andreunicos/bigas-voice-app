@@ -382,6 +382,28 @@ app.whenReady().then(async () => {
       ok('BOTAO DIREITO na pessoa abre o menu com VOLUME no mouse', !!(mj && mj.range && mj.max === '200' && mj.left === '200px'), menu);
       ok('nick do amigo chegou pelo canal', (await view.webContents.executeJavaScript(`[...pares.values()][0].nome`)) === 'Amigo2');
     }
+    // ===== TRÊS NA CALL: um terceiro entra pelo mesmo link (malha do site) =====
+    {
+      const amigo3 = new RealBW({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
+      amigo3.webContents.setAudioMuted(true);
+      await amigo3.loadURL(link);
+      await amigo3.webContents.executeJavaScript(`var n=document.getElementById('meu-nome'); n.value='Amigo3'; n.dispatchEvent(new Event('input',{bubbles:true})); true`).catch(() => {});
+      const tres = await esperarAte(() => view.webContents.executeJavaScript(`(function(){ var ps=[...pares.values()]; return (ps.length===2 && ps.every(p=>p.conectado)) ? ps.map(p=>p.nome).sort().join(',') : null; })()`), 40000, 400);
+      ok('TRÊS NA CALL: os dois amigos conectados comigo (malha)', tres === 'Amigo2,Amigo3', tres);
+      const gente3 = await esperarAte(() => js('(function(){ var g = window.__bigasEstado.call.gente; return g && g.length === 3 ? g.map(x=>x.nome).join(";") : null; })()'), 8000, 300);
+      ok('TRÊS NA CALL: a casa lista os três (eu + 2)', /Teste/.test(gente3 || '') && /Amigo2/.test(gente3 || '') && /Amigo3/.test(gente3 || ''), gente3);
+      const sub3 = await esperarAte(() => js('(function(){ var t = document.getElementById("call-sub").textContent; return /Amigo2/.test(t) && /Amigo3/.test(t) ? t : null; })()'), 6000, 300);
+      ok('TRÊS NA CALL: o painel diz "com Amigo2, Amigo3" (quem está de fato, não só quem eu chamei)', !!sub3, sub3);
+      // os dois amigos se enxergam entre si (malha de verdade, não estrela)
+      const entreEles = await esperarAte(() => amigo3.webContents.executeJavaScript(`(function(){ var ps=[...pares.values()].filter(p=>p.conectado); return ps.length===2 ? ps.map(p=>p.nome).sort().join(',') : null; })()`), 30000, 500);
+      ok('TRÊS NA CALL: o terceiro enxerga os outros dois', entreEles === 'Amigo2,Teste', entreEles);
+      await amigo3.webContents.executeJavaScript('try{ darAdeus(); }catch(e){} true').catch(() => {});
+      amigo3.destroy();
+      ok('TRÊS NA CALL: um sai, a call continua com o outro', (await esperarAte(() => view.webContents.executeJavaScript(`(function(){ var ps=[...pares.values()]; return ps.length===1 && ps[0].nome==='Amigo2' ? 'sim' : null; })()`), 15000, 400)) === 'sim');
+      const sub2 = await esperarAte(() => js('(function(){ var t = document.getElementById("call-sub").textContent; return !/Amigo3/.test(t) ? t : null; })()'), 8000, 300);
+      ok('TRÊS NA CALL: o painel tira quem saiu', !!sub2, sub2);
+    }
+
     await amigo.webContents.executeJavaScript('try{ darAdeus(); }catch(e){} true').catch(() => {});
     amigo.destroy();
     ok('app percebeu que o amigo saiu', (await esperarAte(() => view.webContents.executeJavaScript(`pares.size === 0 ? 'sim' : null`), 15000, 400)) === 'sim');
@@ -517,6 +539,27 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
   await espera(300);
   ok('histórico: a lateral abre com as entradas', (await jsA(`document.getElementById('sec-historico').classList.contains('mostra') && document.querySelectorAll('#historico .cartinha').length`)) >= 2);
   await jsA(`document.getElementById('btn-fechar-historico').click(); true`);
+
+  // GRUPO: A já numa call chama B pra ela → o painel de A mostra "chamando B…" (antes só B via que tocava)
+  {
+    await jsA(`window.__bigasEstado.entrarEmEstado('conectada', 'Fulano', 'chamando'); window.__bigasEstado.call.link = 'https://andreunicos.github.io/#e=teste~grupo'; window.__bigasEstado.pintarCall(); true`);
+    await jsA(`window.__bigasEstado.chamarParaCall(${JSON.stringify(uidB)}, ${JSON.stringify(NICK_B)}); true`);
+    const chamando = await esperarAte(() => jsA(`(function(){ var c = document.getElementById('call-chamando'); return !c.hidden && /chamando teste_bigas_b/.test(c.textContent) ? c.textContent : null; })()`), 10000, 300);
+    ok('GRUPO: quem chama VÊ "chamando B…" no painel', !!chamando, chamando);
+    const tocouB = await esperarAte(() => jsB(`document.getElementById('convite').classList.contains('tem') ? document.getElementById('convite-sub').textContent : null`), 20000, 300);
+    ok('GRUPO: B recebe o convite pra entrar na call', !!tocouB, tocouB);
+    await jsB(`document.getElementById('btn-recusar').click(); true`);
+    const sumiu = await esperarAte(() => jsA(`(function(){ var c = document.getElementById('call-chamando'); return (c.hidden || !/teste_bigas_b/.test(c.textContent)) && /recusou/.test(document.getElementById('recado').textContent) ? 'ok' : null; })()`), 15000, 300);
+    ok('GRUPO: B recusou → some do painel de A com o recado "recusou"', sumiu === 'ok');
+    // e cancelar pelo ✕: o convite para de tocar em B
+    await esperarAte(() => jsB(`!document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 8000, 300);
+    await jsA(`window.__bigasEstado.chamarParaCall(${JSON.stringify(uidB)}, ${JSON.stringify(NICK_B)}); true`);
+    await esperarAte(() => jsB(`document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 20000, 300);
+    await jsA(`document.querySelector('#call-chamando button').click(); true`);
+    const parou = await esperarAte(() => jsB(`!document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 15000, 300);
+    ok('GRUPO: ✕ em "chamando B…" para de tocar em B', parou === 'ok');
+    await jsA(`window.__bigasEstado.entrarEmEstado('nenhuma'); true`);
+  }
 
   // bloqueio: B bloqueia A → A não consegue mais mandar mensagem (regra do servidor); B desbloqueia
   await jsB(`window.__bigasEstado.bloquear(${JSON.stringify(uidA)}, ${JSON.stringify(NICK_A)})`);

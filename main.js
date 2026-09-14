@@ -411,6 +411,16 @@ function vestirSite(wc){
         };
       }
 
+      // o amplificador do site (volume acima de 100%, "cada voz num lugar")
+      // toca por um AudioContext — que ignora o setSinkId dos <audio>. Todo
+      // AudioContext que o site criar nasce apontando pra saída escolhida.
+      try {
+        var AC = window.AudioContext;
+        var ACnovo = function(o){ var c = new AC(o); try { if (window.__bigasSaida && c.setSinkId) c.setSinkId(window.__bigasSaida).catch(function(){}); } catch(e){} return c; };
+        ACnovo.prototype = AC.prototype;
+        window.AudioContext = ACnovo;
+      } catch(e){}
+
       // as preferências do app (voz, mic, saída, volume, qualidade…) valem aqui
       ${scriptPreferencias()}
 
@@ -574,6 +584,7 @@ function scriptPreferencias(){
           var sai = pref.saidaRotulo && ds.find(function(d){ return d.kind === 'audiooutput' && d.label === pref.saidaRotulo; });
           window.__bigasSaida = sai ? sai.deviceId : '';
           document.querySelectorAll('audio').forEach(aplicarSaida);
+          try { if (typeof est !== 'undefined' && est.ctx && est.ctx.setSinkId) est.ctx.setSinkId(window.__bigasSaida || '').catch(function(){}); } catch(e){}
         }).catch(function(){});
       } catch(e){ console.warn('preferências do app', e); }
     })();

@@ -77,6 +77,7 @@ const call = {
   link: '',                    // link da sala atual (pra chamar mais gente)
   conviteRef: null,            // meu convite (quando fui eu que chamei)
   extras: [],                  // todos os convites que mandei nesta call (grupo incluso)
+  chamando: new Map(),         // convites extras ainda tocando: ref.id → { nick, uid, ref, parar }
   pararConvite: null,
   pararAceito: null,           // (quem atendeu) ouve se quem chamou desligou antes de conectar
   relogio: null,
@@ -836,7 +837,22 @@ async function mandarConvite(amigoUid, amigoNick, link, principal){
       sairDaCall();
     }, ESPERA_ATENDER_MS);
   } else {
-    // convidado extra: se ninguém atender, o convite só para de tocar
+    // convidado extra (grupo): aparece no painel como "chamando X…" com ✕,
+    // e a resposta dele vira recado — antes só o outro lado via que tocava
+    const item = { nick: amigoNick, uid: amigoUid, ref, parar: null };
+    call.chamando.set(ref.id, item);
+    pintarCall();
+    const tirar = () => { if (item.parar) { item.parar(); item.parar = null; } call.chamando.delete(ref.id); pintarCall(); };
+    item.parar = onSnapshot(ref, (d) => {
+      if (!d.exists() || !call.chamando.has(ref.id)) return;
+      const e = d.data().estado;
+      if (e === 'chamando') return;
+      tirar();
+      if (e === 'aceita') recado(amigoNick + ' atendeu — entrando na chamada…', 'bem');
+      else if (e === 'recusada') recado(amigoNick + ' recusou.', 'mal');
+      else if (e === 'semResposta') recado(amigoNick + ' não atendeu.', 'mal');
+      else if (e === 'falhou') recado(amigoNick + ' atendeu, mas não conseguiu entrar.', 'mal');
+    }, () => tirar());
     setTimeout(async () => {
       try{ const d = await getDoc(ref); if (d.exists() && d.data().estado === 'chamando') await updateDoc(ref, { estado: 'semResposta' }); }catch{}
     }, ESPERA_ATENDER_MS);
@@ -849,6 +865,8 @@ function entrarEmEstado(estado, com, papel){
     call.com = ''; call.papel = ''; call.link = '';
     call.mudo = false; call.surdo = false; call.gpu = null; call.ping = 0; call.religando = false;
     call.extras = []; call.comUid = null; call.conectouEm = 0;
+    call.chamando.forEach((c) => { if (c.parar) c.parar(); }); call.chamando.clear();
+    call.gente = [];
     $('call-rede').hidden = true;
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
@@ -874,10 +892,21 @@ function pintarCall(){
     $('call-sub').textContent = call.com;
   } else if (call.estado === 'conectada') {
     $('call-titulo').textContent = '🔊 Em chamada';
-    $('call-sub').textContent = 'com ' + call.com + (call.ping ? ' · ' + call.ping + ' ms' : '') + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
+    // quem está de fato na call (a view conta), não só quem eu chamei
+    const outros = (call.gente || []).filter((g) => !g.eu).map((g) => g.nome).filter(Boolean);
+    $('call-sub').textContent = 'com ' + (outros.length ? outros.join(', ') : call.com) + (call.ping ? ' · ' + call.ping + ' ms' : '') + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
     $('call-rede').hidden = !call.religando;
     $('call-rede').textContent = '⟳ a conexão caiu — reconectando…';
   }
+  const cx = $('call-chamando'); cx.innerHTML = '';
+  cx.hidden = call.estado === 'nenhuma' || !call.chamando.size;
+  call.chamando.forEach((c) => {
+    const l = document.createElement('div'); l.className = 'chamando';
+    const t = document.createElement('span'); t.textContent = '⏳ chamando ' + c.nick + '…';
+    const x = document.createElement('button'); x.type = 'button'; x.textContent = '✕'; x.title = 'Parar de chamar ' + c.nick;
+    x.onclick = () => { if (c.parar) { c.parar(); c.parar = null; } call.chamando.delete(c.ref.id); pintarCall(); pararMeuConvite(c.ref); };
+    l.append(t, x); cx.appendChild(l);
+  });
   const naCall = call.estado !== 'nenhuma';
   $('btn-mic').disabled = !naCall; $('btn-surdo').disabled = !naCall;
   $('btn-mic').classList.toggle('on', naCall && call.mudo);
@@ -929,7 +958,7 @@ ponte.aoMudarRede((d) => {
   if (mudou && call.religando) recado('A conexão caiu — reconectando…', 'mal');
   else if (mudou && !call.religando && call.estado === 'conectada') recado('Reconectou.', 'bem');
 });
-ponte.aoMudarGente((g) => { call.gente = Array.isArray(g) ? g : []; });
+ponte.aoMudarGente((g) => { call.gente = Array.isArray(g) ? g : []; if (call.estado !== 'nenhuma') pintarCall(); });
 ponte.aoMudarJogo((d) => {
   jogoAgora = (d && d.nome) || '';
   if (eu.uid) bater();
@@ -1432,4 +1461,4 @@ ponte.versao().then((v) => {
 })();
 
 // pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
-window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear };
+window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall };
