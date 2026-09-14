@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld('bigasHome', {
   aoMudarCall:      (funcao) => { ipcRenderer.on('call:estado', (_ev, dados) => funcao(dados)); },
   aoMudarControles: (funcao) => { ipcRenderer.on('call:controles', (_ev, dados) => funcao(dados)); },
   aoMedirPlaca:     (funcao) => { ipcRenderer.on('call:gpu', (_ev, dados) => funcao(dados)); },
+  aoMudarRede:      (funcao) => { ipcRenderer.on('call:rede', (_ev, dados) => funcao(dados)); },
+  aoMudarGente:     (funcao) => { ipcRenderer.on('call:gente', (_ev, dados) => funcao(dados)); },
+  aoMudarJogo:      (funcao) => { ipcRenderer.on('jogo', (_ev, dados) => funcao(dados)); },
+  aoPararSomDoApp:  (funcao) => { ipcRenderer.on('call:somDoApp', (_ev, dados) => funcao(dados)); },
+  diagnostico:      (daCasa) => ipcRenderer.invoke('diagnostico:gerar', daCasa),
   palcoMudou:    (rect) => ipcRenderer.send('palco:rect', rect),
 
   // avisos pro sistema
@@ -40,6 +45,14 @@ contextBridge.exposeInMainWorld('bigasHome', {
 contextBridge.exposeInMainWorld('bigasApp', {
   sairDaCall: ()  => ipcRenderer.send('call:sair'),
   avisar:     (o) => ipcRenderer.send('call:aviso', String(o || '')),
+  // som de UM app: a página pergunta se a captura que acabou de nascer
+  // deve usar o som do processo escolhido; o PCM chega por aoReceberSom
+  somDoApp:     ()       => ipcRenderer.invoke('call:somDoApp'),
+  aoReceberSom: (funcao) => { ipcRenderer.on('som:pcm', (_ev, bytes) => funcao(bytes)); },
+});
+
+contextBridge.exposeInMainWorld('bigasSobreposicao', {
+  aoReceberGente: (funcao) => { ipcRenderer.on('sobreposicao:gente', (_ev, gente) => funcao(gente)); },
 });
 
 contextBridge.exposeInMainWorld('bigasSeletor', {

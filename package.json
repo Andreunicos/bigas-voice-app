@@ -1,6 +1,6 @@
 {
   "name": "bigas-voice-app",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "description": "Bigas Voice — o mesmo site, num aplicativo que se atualiza sozinho.",
   "main": "main.js",
   "author": "Andreunicos",
@@ -31,6 +31,8 @@
       "home.js",
       "seletor-de-tela.html",
       "seletor-de-tela.js",
+      "sobreposicao.html",
+      "sobreposicao.js",
       "icone.png"
     ],
     "win": {
@@ -52,6 +54,22 @@
       {
         "from": "nativo/gpuprio.exe",
         "to": "gpuprio.exe"
+      },
+      {
+        "from": "nativo/teclas.exe",
+        "to": "teclas.exe"
+      },
+      {
+        "from": "nativo/somdoapp.exe",
+        "to": "somdoapp.exe"
+      },
+      {
+        "from": "nativo/rnnoise.wasm",
+        "to": "rnnoise.wasm"
+      },
+      {
+        "from": "nativo/LICENCA-rnnoise.txt",
+        "to": "LICENCA-rnnoise.txt"
       }
     ]
   }

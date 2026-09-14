@@ -143,6 +143,7 @@
   .amigo .nome{ font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:flex; align-items:center; gap:6px }
   .amigo .estado{ font-size:11.5px; color:var(--txt3) }
   .amigo.online .estado{ color:var(--txt2) }
+  .amigo .estado.jogo{ color:#8fe8b3 }
   .amigo .acoes{ display:flex; gap:4px; opacity:0; transition:opacity .12s }
   .amigo:hover .acoes, .amigo.aberto .acoes{ opacity:1 }
   .amigo .acoes button{
@@ -177,6 +178,9 @@
   .cartinha .nao:hover{ background:var(--vermelho); color:#fff }
   .cartinha.perdida{ background:transparent; border:1px dashed var(--linha2) }
   .cartinha.perdida b{ color:#ff9d94 }
+  .cartinha.hist{ margin:0; background:var(--sup3) }
+  .cartinha.hist.perdida{ background:transparent }
+  .cartinha .tipo{ font-size:14px; width:22px; text-align:center; flex-shrink:0 }
 
   /* convite chegando */
   .convite{
@@ -203,6 +207,7 @@
   .painel-call.conectando .titulo{ color:var(--amarelo) }
   .painel-call .sub{ font-size:11.5px; color:var(--txt2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .painel-call button{ padding:8px 12px; font-size:12.5px }
+  .painel-call .rede{ color:var(--amarelo); animation:pulsa 1.2s ease-in-out infinite }
 
   /* rodapé: você, mic/fone, versão, atualizar */
   .rodape{
@@ -406,6 +411,7 @@
       </div>
       <div class="risco"></div>
       <div class="icone ativo" title="Amigos">🏠</div>
+      <button class="icone" id="btn-historico" type="button" title="Histórico de chamadas">🕘</button>
       <div class="espaco"></div>
       <button class="icone" id="btn-ajustes" type="button" title="Ajustes">⚙</button>
     </div>
@@ -447,6 +453,7 @@
         <div class="txt">
           <div class="titulo"><span class="girando" id="call-girando" hidden></span><span id="call-titulo">Em chamada</span></div>
           <div class="sub" id="call-sub"></div>
+          <div class="sub rede" id="call-rede" hidden></div>
         </div>
         <button class="b-vermelho" id="btn-sair-call" type="button" title="Sair da chamada">Sair</button>
       </div>
@@ -502,6 +509,15 @@
           </div>
         </section>
 
+        <section id="sec-historico">
+          <div class="lateral-topo">
+            <b>Histórico de chamadas</b>
+            <button class="link" id="btn-limpar-historico" type="button">limpar</button>
+            <button class="fechar" id="btn-fechar-historico" type="button" title="Fechar">×</button>
+          </div>
+          <div class="mensagens" id="historico"></div>
+        </section>
+
       </aside>
     </div>
   </div>
@@ -526,6 +542,10 @@
         <h2>Conta</h2>
         <div class="ajuste"><div class="txt"><b id="aj-nick"></b><small id="aj-email">sem e-mail de recuperação</small></div><button class="b-teste" id="btn-sair-conta-aj" type="button">Sair da conta</button></div>
         <small style="color:var(--txt3)">Seu nick é como os amigos te acham. Sem e-mail cadastrado, a senha não tem como ser recuperada.</small>
+        <div class="bloco">
+          <h3>Alguma coisa não funciona?</h3>
+          <div class="ajuste"><div class="txt"><b>Gerar diagnóstico</b><small>Salva na Área de Trabalho (e copia) um arquivo com versão, placa de vídeo, monitores, microfone, o que a chamada está fazendo e os últimos avisos. Manda pra quem cuida do app — resolve sem quarenta mensagens.</small></div><button class="b-teste" id="btn-diagnostico" type="button">📋 Gerar</button></div>
+        </div>
       </section>
 
       <section data-sec="voz">
@@ -541,10 +561,11 @@
           <h3>Como você fala</h3>
           <div class="cartoes">
             <button type="button" class="cartao" data-fala="voz"><b>Voz aberta</b><small>O microfone fica ligado; o app corta o silêncio.</small></button>
-            <button type="button" class="cartao" data-fala="ptt"><b>Segurar pra falar</b><small>Só transmite enquanto a tecla está apertada (dentro da call).</small></button>
+            <button type="button" class="cartao" data-fala="ptt"><b>Segurar pra falar</b><small>Só transmite enquanto a tecla está apertada — funciona com o jogo na frente.</small></button>
           </div>
-          <div class="ajuste" id="linha-ptt"><div class="txt"><b>Tecla de falar</b><small>Vale com a janela do Bigas Voice em foco.</small></div><button class="tecla" id="tecla-ptt" type="button">V</button></div>
+          <div class="ajuste" id="linha-ptt"><div class="txt"><b>Tecla de falar</b><small>Vale em qualquer lugar, inclusive dentro do jogo: segura, fala, solta. Pode ser tecla ou botão lateral do mouse — clica aqui e aperta.</small></div><button class="tecla" id="tecla-ptt" type="button">V</button></div>
           <div class="ajuste"><div class="txt"><b>Limpar o microfone</b><small>Cancelamento de eco e de ruído. Desliga só se usar um microfone de estúdio com interface.</small></div><button class="chave on" id="chave-limpar" type="button" aria-label="Limpar o microfone"></button></div>
+          <div class="ajuste"><div class="txt"><b>Ruído forte (teclado mecânico, ventilador)</b><small>Um segundo filtro, com rede neural (RNNoise — a mesma família do "Krisp" do Discord), roda no seu PC e tira o que o filtro normal deixa passar. Custa um pouquinho de processador. Vale na hora, até no meio da call.</small></div><button class="chave" id="chave-ruido" type="button" aria-label="Ruído forte"></button></div>
         </div>
       </section>
 
@@ -596,7 +617,7 @@
 
       <section data-sec="atalhos">
         <h2>Atalhos</h2>
-        <small style="color:var(--txt3)">Valem em qualquer lugar, inclusive dentro do jogo. Clica na tecla e aperta a combinação nova. São liga/desliga (segurar-pra-falar de fora da janela o Windows não deixa um app ver).</small>
+        <small style="color:var(--txt3)">Valem em qualquer lugar, inclusive dentro do jogo. Clica na tecla e aperta a combinação nova. São liga/desliga; o "segurar pra falar" fica em Voz e microfone.</small>
         <div class="ajuste"><div class="txt"><b>Mutar / desmutar</b><small>Liga e desliga o microfone.</small></div><button class="tecla" id="tecla-mic" type="button">…</button></div>
         <div class="ajuste"><div class="txt"><b>Silenciar tudo</b><small>Para de ouvir todo mundo (e volta).</small></div><button class="tecla" id="tecla-surdo" type="button">…</button></div>
       </section>
@@ -605,6 +626,15 @@
         <h2>Janela</h2>
         <div class="ajuste"><div class="txt"><b>Ficar na bandeja ao fechar</b><small>Fechar a janela esconde o app perto do relógio, em vez de encerrar. Desligado, fechar = fechar.</small></div><button class="chave" id="chave-bandeja" type="button" aria-label="Ficar na bandeja"></button></div>
         <div class="ajuste"><div class="txt"><b>Abrir com o Windows</b><small>O Bigas Voice abre sozinho quando você liga o PC.</small></div><button class="chave" id="chave-iniciar" type="button" aria-label="Abrir com o Windows"></button></div>
+        <div class="bloco">
+          <h3>Por cima do jogo</h3>
+          <div class="ajuste"><div class="txt"><b>Mostrar quem está falando</b><small>Fichas pequenas num canto, por cima do jogo, com quem está na call e quem está falando (igual Discord). Só aparece quando o Bigas Voice não está na frente. Precisa do jogo em janela sem borda — tela cheia exclusiva passa por fora.</small></div><button class="chave on" id="chave-sobrepor" type="button" aria-label="Mostrar quem está falando"></button></div>
+          <div class="ajuste" id="linha-canto"><div class="txt"><b>Canto</b></div><select id="sel-canto" style="width:auto"><option value="esq-cima">Em cima, à esquerda</option><option value="dir-cima">Em cima, à direita</option><option value="esq-baixo">Embaixo, à esquerda</option><option value="dir-baixo">Embaixo, à direita</option></select></div>
+        </div>
+        <div class="bloco">
+          <h3>Status</h3>
+          <div class="ajuste"><div class="txt"><b>Mostrar o jogo que estou jogando</b><small>Seus amigos veem "Jogando PUBG" na lista. O app só olha se um jogo conhecido está aberto — nada mais sai daqui.</small></div><button class="chave on" id="chave-jogo" type="button" aria-label="Mostrar o jogo"></button></div>
+        </div>
       </section>
 
       <section data-sec="bloqueados">

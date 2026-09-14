@@ -2,7 +2,7 @@
 // Cole isto em: Firebase Console › Firestore Database › Regras › Publicar.
 // É ISTO que protege os dados — a chave dentro do home.js não é segredo.
 //
-// usuarios/{uid}                nick, nickBusca, ultimoVisto, emChamada
+// usuarios/{uid}                nick, nickBusca, ultimoVisto, emChamada, jogando
 // usuarios/{uid}/amigos/{outro} amizade ACEITA (cada lado guarda o seu)
 // usuarios/{uid}/bloqueados/…   quem eu bloqueei (só eu vejo)
 // pedidos/{id}                  pedido de amizade: de, deNick, para, paraNick,

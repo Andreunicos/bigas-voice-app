@@ -40,10 +40,11 @@
   .fonte .nome span{ overflow:hidden; text-overflow:ellipsis }
   .vazio{ grid-column:1/-1; color:var(--txt3); text-align:center; padding:40px 20px }
 
-  aside{ width:330px; flex-shrink:0; border-left:1px solid var(--linha); background:var(--sup); padding:14px 20px; display:flex; flex-direction:column; gap:10px; overflow-y:auto }
+  aside{ width:340px; flex-shrink:0; border-left:1px solid var(--linha); background:var(--sup); padding:12px 20px; display:flex; flex-direction:column; gap:8px; overflow-y:auto }
+  aside::-webkit-scrollbar{ width:8px } aside::-webkit-scrollbar-thumb{ background:var(--sup4); border-radius:8px }
   h2{ margin:0; font-size:11px; color:var(--txt3); text-transform:uppercase; letter-spacing:.06em }
-  .opcoes{ display:flex; flex-direction:column; gap:4px }
-  .opcao{ display:flex; align-items:center; gap:10px; padding:7px 11px; border-radius:11px; background:var(--sup2); border:2px solid transparent; text-align:left }
+  .opcoes{ display:flex; flex-direction:column; gap:3px }
+  .opcao{ display:flex; align-items:center; gap:10px; padding:5px 11px; border-radius:11px; background:var(--sup2); border:2px solid transparent; text-align:left }
   .opcao:hover{ background:var(--sup3) }
   .opcao.escolhida{ border-color:var(--azul2); background:var(--sup3) }
   .opcao .bola{ width:14px; height:14px; border-radius:50%; border:2px solid var(--txt3); flex-shrink:0 }
@@ -52,10 +53,14 @@
   .opcao small{ display:block; color:var(--txt3); font-size:11px; line-height:1.3 }
   .linha{ display:flex; align-items:center; gap:12px; padding:10px 11px; border-radius:11px; background:var(--sup2) }
   .linha .txt{ flex:1 } .linha b{ display:block; font-size:13.5px } .linha small{ color:var(--txt3); font-size:11.5px }
+  .linha.coluna{ flex-direction:column; align-items:stretch; gap:8px }
+  .linha select{ background:#0c0d10; border:1px solid var(--linha2); border-radius:9px; color:var(--txt); padding:8px 10px; font:inherit; width:100% }
+  .linha select:focus{ outline:none; border-color:var(--azul) }
+  .linha .nota{ color:#e9c46a }
   .chave{ position:relative; width:42px; height:24px; border-radius:12px; background:var(--sup4); flex-shrink:0; transition:background .15s }
   .chave::after{ content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:#fff; transition:transform .15s }
   .chave.on{ background:var(--verde) } .chave.on::after{ transform:translateX(18px) }
-  .dica{ margin-top:auto; font-size:11.5px; color:var(--txt3); line-height:1.5; padding:10px 11px; border-radius:11px; background:rgba(240,180,41,.07); border:1px solid rgba(240,180,41,.25) }
+  .dica{ margin-top:2px; font-size:11px; color:var(--txt3); line-height:1.5; padding:10px 11px; border-radius:11px; background:rgba(240,180,41,.07); border:1px solid rgba(240,180,41,.25) }
   .dica b{ color:#e9c46a }
 
   footer{ padding:12px 26px; border-top:1px solid var(--linha); display:flex; align-items:center; gap:10px; background:var(--sup) }
@@ -78,6 +83,7 @@
       <div class="opcoes" id="qualidades"></div>
       <h2>Som</h2>
       <div class="linha"><div class="txt"><b>Som da tela</b><small>O jogo, o vídeo — sem as vozes da call.</small></div><button class="chave on" id="chave-som" type="button" aria-label="Som da tela"></button></div>
+      <div class="linha coluna" id="linha-som-de"><div class="txt"><b>De onde</b><small>"Só um app" = o som daquele programa, em qualquer saída (fone ou caixa), sem Spotify, Discord e avisos.</small></div><select id="sel-som"><option value="pc">Tudo o que toca na saída padrão</option></select><small class="nota" id="sem-apps" hidden>Nenhum programa com som aberto agora. Abre o jogo antes e "só do jogo" aparece aqui.</small></div>
       <div class="dica">Jogo em <b>janela sem borda</b>, não em tela cheia exclusiva — senão a captura fica presa em poucos quadros. E prefira a <b>tela inteira</b> à janela do jogo.</div>
     </aside>
   </main>

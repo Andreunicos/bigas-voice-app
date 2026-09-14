@@ -18,6 +18,10 @@ let aba = 'telas';
 let escolhida = null;
 let qualidade = 'auto';
 let som = true;
+let apps = [];          // processos com sessão de som (o app lista pelo Windows)
+let pidsJanela = {};    // id da janela → pid (pra pré-escolher o som daquele app)
+let somDe = 'pc';       // 'pc' (saída padrão inteira) | pid (só aquele app, em qualquer saída)
+let somDeManual = false; // a pessoa escolheu na mão: não trocar sozinho ao clicar noutra fonte
 
 function pintarFontes(){
   const caixa = $('fontes');
@@ -36,11 +40,12 @@ function pintarFontes(){
     quadro.append(img, check);
     const nome = document.createElement('div'); nome.className = 'nome';
     if (f.icone) { const ic = document.createElement('img'); ic.src = f.icone; ic.alt = ''; nome.appendChild(ic); }
-    const sp = document.createElement('span'); sp.textContent = f.ehTela ? ('Tela ' + (i + 1) + (lista.length > 1 ? '' : ' (inteira)')) : f.nome; sp.title = f.nome;
+    // o app já manda o nome de verdade do monitor (modelo · resolução · principal)
+    const sp = document.createElement('span'); sp.textContent = f.nome || ('Tela ' + (i + 1)); sp.title = f.nome;
     nome.appendChild(sp);
     b.append(quadro, nome);
-    b.onclick = () => { escolhida = f.id; pintarFontes(); pintarResumo(); };
-    b.ondblclick = () => { escolhida = f.id; transmitir(); };
+    b.onclick = () => { escolhida = f.id; sugerirSom(); pintarFontes(); pintarSom(); pintarResumo(); };
+    b.ondblclick = () => { escolhida = f.id; sugerirSom(); transmitir(); };
     caixa.appendChild(b);
   });
 }
@@ -61,24 +66,46 @@ function pintarQualidades(){
   });
 }
 
+// janela de um app que tem som → o som passa a ser só daquele app
+function sugerirSom(){
+  if (somDeManual) return;
+  const pid = pidsJanela[escolhida];
+  somDe = (pid && apps.some((a) => a.pid === pid)) ? pid : 'pc';
+}
+function nomeDoApp(a){
+  const exe = a.exe.replace(/\.exe$/i, '');
+  return (a.titulo ? a.titulo.slice(0, 40) + ' (' + exe + ')' : exe) + (a.tocando ? ' · tocando agora' : '');
+}
+function pintarSom(){
+  const sel = $('sel-som');
+  sel.innerHTML = '';
+  const pc = document.createElement('option'); pc.value = 'pc'; pc.textContent = 'Tudo o que toca na saída padrão'; sel.appendChild(pc);
+  apps.forEach((a) => { const o = document.createElement('option'); o.value = String(a.pid); o.textContent = 'Só ' + nomeDoApp(a); sel.appendChild(o); });
+  sel.value = String(somDe);
+  if (sel.value !== String(somDe)) { somDe = 'pc'; sel.value = 'pc'; }
+  $('linha-som-de').hidden = !som;
+  $('sem-apps').hidden = !som || apps.length > 0;
+}
 function pintarResumo(){
   const f = fontes.find((x) => x.id === escolhida);
   const q = QUALIDADES.find((x) => x.id === qualidade) || QUALIDADES[0];
+  const a = apps.find((x) => String(x.pid) === String(somDe));
   $('btn-ir').disabled = !f;
   $('resumo').textContent = f
-    ? (f.ehTela ? 'Tela inteira' : f.nome) + ' · ' + q.titulo + (som ? ' · com som' : ' · sem som')
+    ? (f.ehTela ? f.nome : f.nome) + ' · ' + q.titulo + (som ? (a ? ' · som só do ' + a.exe.replace(/\.exe$/i, '') : ' · com som') : ' · sem som')
     : 'Escolhe uma tela ou janela.';
 }
 
 function transmitir(){
   if (!escolhida) return;
   $('btn-ir').disabled = true;
-  window.bigasSeletor.escolher({ id: escolhida, qualidade, som });
+  window.bigasSeletor.escolher({ id: escolhida, qualidade, som, somDe: som ? somDe : 'pc' });
 }
 
 $('aba-telas').onclick = () => { aba = 'telas'; $('aba-telas').classList.add('ativa'); $('aba-janelas').classList.remove('ativa'); pintarFontes(); };
 $('aba-janelas').onclick = () => { aba = 'janelas'; $('aba-janelas').classList.add('ativa'); $('aba-telas').classList.remove('ativa'); pintarFontes(); };
-$('chave-som').onclick = () => { som = !som; $('chave-som').classList.toggle('on', som); pintarResumo(); };
+$('chave-som').onclick = () => { som = !som; $('chave-som').classList.toggle('on', som); pintarSom(); pintarResumo(); };
+$('sel-som').onchange = () => { somDe = $('sel-som').value === 'pc' ? 'pc' : Number($('sel-som').value); somDeManual = true; pintarResumo(); };
 $('btn-ir').onclick = transmitir;
 $('btn-cancelar').onclick = () => window.bigasSeletor.escolher(null);
 document.addEventListener('keydown', (e) => {
@@ -92,9 +119,12 @@ window.bigasSeletor.aoReceberFontes((dados) => {
   fontes = d.lista || [];
   if (d.qualidade && QUALIDADES.some((q) => q.id === d.qualidade)) qualidade = d.qualidade;
   som = d.som !== false;
+  apps = Array.isArray(d.apps) ? d.apps : [];
+  pidsJanela = d.pidsJanela || {};
   $('chave-som').classList.toggle('on', som);
   // a tela inteira já vem escolhida: é o caso comum e o que funciona melhor com jogo
   const tela = fontes.find((f) => f.ehTela);
   if (tela && !escolhida) escolhida = tela.id;
-  pintarQualidades(); pintarFontes(); pintarResumo();
+  sugerirSom();
+  pintarQualidades(); pintarFontes(); pintarSom(); pintarResumo();
 });

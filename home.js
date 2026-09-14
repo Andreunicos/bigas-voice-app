@@ -85,6 +85,8 @@ const call = {
 
 const chat = { com: null, nick: '', parar: null };
 let config = {};
+let jogoAgora = '';            // jogo conhecido aberto (o app avisa)
+let historicoAberto = false;
 
 /* =====================================================================
  * RECADOS E SONS
@@ -309,7 +311,7 @@ function desligarTudo(){
 function bater(){
   if (!eu.uid) return;
   setDoc(doc(db, 'usuarios', eu.uid), {
-    ultimoVisto: serverTimestamp(), emChamada: call.estado !== 'nenhuma',
+    ultimoVisto: serverTimestamp(), emChamada: call.estado !== 'nenhuma', jogando: jogoAgora || '',
   }, { merge: true }).catch(() => {});
 }
 function ligarPresenca(){
@@ -566,8 +568,11 @@ function pintarAmigos(){
     nome.textContent = a.nick;
     if (a.naoLidas) { const b = document.createElement('span'); b.className = 'bolinha'; b.textContent = '●'; b.title = 'mensagem nova'; nome.appendChild(b); }
     const estado = document.createElement('div'); estado.className = 'estado';
+    const jogo = p !== 'offline' && a.presenca && a.presenca.jogando ? String(a.presenca.jogando).slice(0, 30) : '';
     estado.textContent = a.ultima && a.naoLidas ? String(a.ultima.texto || '').slice(0, 40)
+      : jogo ? '🎮 Jogando ' + jogo + (p === 'emcall' ? ' · em chamada' : '')
       : p === 'emcall' ? 'em chamada' : p === 'online' ? 'online' : 'offline';
+    if (jogo && !(a.ultima && a.naoLidas)) estado.classList.add('jogo');
     txt.append(nome, estado);
 
     const acoes = document.createElement('div'); acoes.className = 'acoes';
@@ -684,13 +689,63 @@ $('chat-texto').addEventListener('input', ajustarAltura);
 /* lateral: chat OU ajustes */
 function mostrarLateral(qual){
   $('lateral').classList.add('mostra');
-  ['sec-chat'].forEach((id) => $(id).classList.toggle('mostra', id === qual));
+  ['sec-chat', 'sec-historico'].forEach((id) => $(id).classList.toggle('mostra', id === qual));
+  historicoAberto = qual === 'sec-historico';
+  $('btn-historico').classList.toggle('ativo', historicoAberto);
   mandarRectDoPalco();
 }
 function fecharLateral(){
   $('lateral').classList.remove('mostra');
+  historicoAberto = false;
+  $('btn-historico').classList.remove('ativo');
   mandarRectDoPalco();
 }
+
+/* =====================================================================
+ * HISTÓRICO DE CHAMADAS — fica só neste PC (localStorage), por conta
+ * =================================================================== */
+function historicoLer(){ return eu.uid ? lerLocal('historico:' + eu.uid, []) : []; }
+function anotarNoHistorico(item){
+  if (!eu.uid) return;
+  const h = historicoLer();
+  h.unshift(Object.assign({ quando: Date.now() }, item));
+  guardarLocal('historico:' + eu.uid, h.slice(0, 100));
+  if (historicoAberto) pintarHistorico();
+}
+function duracaoBonita(ms){
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + ' s';
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? m + ' min' + (r ? ' ' + r + ' s' : '') : Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+}
+function pintarHistorico(){
+  const caixa = $('historico'); caixa.innerHTML = '';
+  const h = historicoLer();
+  if (!h.length) { caixa.innerHTML = '<p class="vazio">Nenhuma chamada ainda.</p>'; return; }
+  let diaAnterior = '';
+  h.forEach((c) => {
+    const d = new Date(c.quando);
+    const dd = dia({ toMillis: () => c.quando }) || d.toLocaleDateString('pt-BR');
+    if (dd !== diaAnterior) { const t = document.createElement('div'); t.className = 'msg dia'; t.textContent = dd; caixa.appendChild(t); diaAnterior = dd; }
+    const el = document.createElement('div'); el.className = 'cartinha hist' + (c.tipo === 'perdida' ? ' perdida' : '');
+    const tipo = document.createElement('div'); tipo.className = 'tipo';
+    tipo.textContent = c.tipo === 'perdida' ? '↙' : c.tipo === 'recebi' ? '↙' : '↗';
+    tipo.title = c.tipo === 'perdida' ? 'Perdida' : c.tipo === 'recebi' ? 'Recebida' : 'Feita';
+    tipo.style.color = c.tipo === 'perdida' ? '#ff9d94' : c.tipo === 'recebi' ? 'var(--verde)' : 'var(--azul2)';
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const b = document.createElement('b'); b.textContent = c.nick || '?';
+    const sm = document.createElement('small');
+    sm.textContent = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) + (c.tipo === 'perdida' ? ' · não atendida' : c.duracao ? ' · ' + duracaoBonita(c.duracao) : ' · não completou');
+    txt.append(b, sm);
+    const voltar = document.createElement('button'); voltar.className = 'sim'; voltar.textContent = '📞'; voltar.title = 'Ligar';
+    voltar.onclick = () => { const a = c.uid && amigos.get(c.uid); if (a) chamarAmigo(c.uid, a.nick); else recado((c.nick || 'Essa pessoa') + ' não está na sua lista.', 'mal'); };
+    el.append(tipo, txt, voltar);
+    caixa.appendChild(el);
+  });
+}
+$('btn-historico').onclick = () => { if (historicoAberto) fecharLateral(); else { if (chat.com) { if (chat.parar) { chat.parar(); chat.parar = null; } chat.com = null; chat.nick = ''; pintarAmigos(); } mostrarLateral('sec-historico'); pintarHistorico(); } };
+$('btn-fechar-historico').onclick = fecharLateral;
+$('btn-limpar-historico').onclick = () => { if (confirm('Apagar o histórico de chamadas deste PC?')) { guardarLocal('historico:' + eu.uid, []); pintarHistorico(); } };
 
 /* =====================================================================
  * CHAMAR — a call abre no palco; o link fica só no convite
@@ -710,6 +765,7 @@ async function chamarAmigo(amigoUid, amigoNick){
     }
     if (call.estado === 'nenhuma') return; // desistiu no meio
     call.link = link;
+    call.comUid = amigoUid;
     pintarAmigos();
     await mandarConvite(amigoUid, amigoNick, link, true);
   }catch(e){
@@ -791,8 +847,9 @@ function entrarEmEstado(estado, com, papel){
   call.estado = estado;
   if (estado === 'nenhuma') {
     call.com = ''; call.papel = ''; call.link = '';
-    call.mudo = false; call.surdo = false; call.gpu = null;
-    call.extras = [];
+    call.mudo = false; call.surdo = false; call.gpu = null; call.ping = 0; call.religando = false;
+    call.extras = []; call.comUid = null; call.conectouEm = 0;
+    $('call-rede').hidden = true;
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
     if (call.pararAceito) { call.pararAceito(); call.pararAceito = null; }
@@ -817,7 +874,9 @@ function pintarCall(){
     $('call-sub').textContent = call.com;
   } else if (call.estado === 'conectada') {
     $('call-titulo').textContent = '🔊 Em chamada';
-    $('call-sub').textContent = 'com ' + call.com + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
+    $('call-sub').textContent = 'com ' + call.com + (call.ping ? ' · ' + call.ping + ' ms' : '') + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
+    $('call-rede').hidden = !call.religando;
+    $('call-rede').textContent = '⟳ a conexão caiu — reconectando…';
   }
   const naCall = call.estado !== 'nenhuma';
   $('btn-mic').disabled = !naCall; $('btn-surdo').disabled = !naCall;
@@ -862,16 +921,32 @@ ponte.aoMedirPlaca((d) => {
   }
 });
 
+ponte.aoMudarRede((d) => {
+  if (call.estado === 'nenhuma') return;
+  const mudou = call.religando !== !!d.religando;
+  call.religando = !!d.religando; call.ping = Number(d.ping) || 0;
+  pintarCall();
+  if (mudou && call.religando) recado('A conexão caiu — reconectando…', 'mal');
+  else if (mudou && !call.religando && call.estado === 'conectada') recado('Reconectou.', 'bem');
+});
+ponte.aoMudarGente((g) => { call.gente = Array.isArray(g) ? g : []; });
+ponte.aoMudarJogo((d) => {
+  jogoAgora = (d && d.nome) || '';
+  if (eu.uid) bater();
+});
+ponte.aoPararSomDoApp(() => { if (call.estado !== 'nenhuma') recado('O som do app que você estava transmitindo parou (o programa fechou?). A imagem continua.', 'mal'); });
+
 // o processo principal conta o que aconteceu com a call de verdade
 ponte.aoMudarCall(async (d) => {
   if (d.estado === 'conectando') {
     if (call.estado === 'nenhuma') entrarEmEstado('conectando');
   } else if (d.estado === 'conectada') {
-    if (call.estado !== 'nenhuma') entrarEmEstado('conectada');
+    if (call.estado !== 'nenhuma') { if (!call.conectouEm) call.conectouEm = Date.now(); entrarEmEstado('conectada'); }
     pararSom();
     bater();
   } else if (d.estado === 'encerrada') {
     const refs = call.extras.slice();
+    if (call.com) anotarNoHistorico({ tipo: call.papel === 'atendendo' ? 'recebi' : 'fiz', nick: call.com, uid: call.comUid, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
     entrarEmEstado('nenhuma');
     bater();
     for (const ref of refs) await pararMeuConvite(ref);
@@ -943,6 +1018,7 @@ function pintarConvite(){
       }
       entrarEmEstado('conectando', c.deNick, 'atendendo');
       call.link = c.link;
+      call.comUid = c.de;
       $('conectando-txt').textContent = 'Entrando na chamada de ' + c.deNick + '…';
       mandarRectDoPalco();
       // se quem chamou desligar enquanto eu entro, eu saio junto
@@ -978,6 +1054,15 @@ function ouvirPerdidas(){
       partes[estado] = snap.docs;
       perdidas = partes.semResposta.concat(partes.encerrada);
       pintarPerdidas();
+      // vai pro histórico deste PC uma vez só (o id do convite marca)
+      snap.docChanges().forEach((ch) => {
+        if (ch.type !== 'added') return;
+        const c = ch.doc.data(); const t = ms(c.quando);
+        if (!t || t < carregadoEm - PERDIDA_VALE_MS) return;
+        const h = historicoLer();
+        if (h.some((x) => x.convite === ch.doc.id)) return;
+        anotarNoHistorico({ tipo: 'perdida', nick: c.deNick, uid: c.de, convite: ch.doc.id, quando: t });
+      });
     }, (e) => console.error(e)));
   }
 }
@@ -1062,7 +1147,7 @@ async function mudarConfig(mudancas){
   try { config = await ponte.configMudar(mudancas); } catch (e) { recado('Não consegui salvar o ajuste.', 'mal'); }
   pintarAjustes();
   // já numa call: vale agora, sem reiniciar nada
-  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'prioridadeGpu', 'nitidezExtra'].some((k) => k in mudancas)) ponte.reaplicar();
+  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'prioridadeGpu', 'nitidezExtra', 'ruidoForte'].some((k) => k in mudancas)) ponte.reaplicar();
 }
 
 function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
@@ -1074,6 +1159,11 @@ function pintarAjustes(){
   $('chave-som-tela').classList.toggle('on', config.somDaTela !== false);
   $('chave-gpu').classList.toggle('on', config.prioridadeGpu !== false);
   $('chave-nitidez').classList.toggle('on', !!config.nitidezExtra);
+  $('chave-ruido').classList.toggle('on', !!config.ruidoForte);
+  $('chave-sobrepor').classList.toggle('on', config.sobrepor !== false);
+  $('linha-canto').style.display = config.sobrepor !== false ? '' : 'none';
+  $('sel-canto').value = config.cantoSobreposicao || 'esq-cima';
+  $('chave-jogo').classList.toggle('on', config.mostrarJogo !== false);
   $('tecla-mic').textContent = bonitinho(config.atalhoMic);
   $('tecla-surdo').textContent = bonitinho(config.atalhoSurdo);
   $('tecla-ptt').textContent = config.nomeTeclaPtt || 'V';
@@ -1185,6 +1275,22 @@ $('chave-limpar').onclick = () => mudarConfig({ limpar: config.limpar === false 
 $('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela === false });
 $('chave-gpu').onclick = () => mudarConfig({ prioridadeGpu: config.prioridadeGpu === false });
 $('chave-nitidez').onclick = () => mudarConfig({ nitidezExtra: !config.nitidezExtra });
+$('chave-ruido').onclick = () => mudarConfig({ ruidoForte: !config.ruidoForte });
+$('chave-sobrepor').onclick = () => mudarConfig({ sobrepor: config.sobrepor === false });
+$('sel-canto').onchange = () => mudarConfig({ cantoSobreposicao: $('sel-canto').value });
+$('chave-jogo').onclick = () => mudarConfig({ mostrarJogo: config.mostrarJogo === false });
+$('btn-diagnostico').onclick = async () => {
+  const b = $('btn-diagnostico'); b.disabled = true; b.textContent = 'Gerando…';
+  try{
+    let ds = [];
+    try { ds = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind !== 'videoinput').map((d) => d.kind + ': ' + (d.label || '(sem nome)')); } catch {}
+    const r = await ponte.diagnostico({ nick: eu.nick, call: { estado: call.estado, com: call.com, papel: call.papel, ping: call.ping, gpu: call.gpu, religando: call.religando, mudo: call.mudo, surdo: call.surdo }, amigos: amigos.size, jogo: jogoAgora, online: navigator.onLine, aparelhos: ds });
+    if (r && r.caminho) recado('Diagnóstico salvo na Área de Trabalho e copiado. É só colar pra quem cuida do app.', 'bem');
+    else if (r && r.texto) recado('Diagnóstico copiado (não consegui salvar o arquivo).', 'bem');
+    else recado('Não consegui gerar o diagnóstico.', 'mal');
+  }catch(e){ recado('Não consegui gerar o diagnóstico.', 'mal'); }
+  finally{ b.disabled = false; b.textContent = '📋 Gerar'; }
+};
 $('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
 $('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
 $('sel-codec-app').onchange = () => mudarConfig({ codec: $('sel-codec-app').value });
@@ -1205,20 +1311,29 @@ $('chave-jogos').onclick = async () => {
 
 /* captura de tecla: atalhos globais (acelerador do Electron) e tecla de falar (código do teclado) */
 let capturandoTecla = false;
-function ligarCapturaDeTecla(botao, aoTerminar, precisaModificador){
+function ligarCapturaDeTecla(botao, aoTerminar, aceitaMouse){
   botao.onclick = () => {
     if (capturandoTecla) return;
     capturandoTecla = true;
-    botao.classList.add('gravando'); botao.textContent = 'aperta a tecla…';
+    botao.classList.add('gravando'); botao.textContent = aceitaMouse ? 'aperta a tecla ou botão…' : 'aperta a tecla…';
+    const terminar = () => { window.removeEventListener('keydown', ouvir, true); window.removeEventListener('mousedown', ouvirMouse, true); botao.classList.remove('gravando'); capturandoTecla = false; };
     const ouvir = (ev) => {
       ev.preventDefault(); ev.stopPropagation();
       if (['Control', 'Shift', 'Alt', 'Meta'].includes(ev.key)) return; // só modificador: espera a tecla
-      window.removeEventListener('keydown', ouvir, true);
-      botao.classList.remove('gravando'); capturandoTecla = false;
+      terminar();
       if (ev.key === 'Escape') { pintarAjustes(); return; }
       aoTerminar(ev);
     };
+    // botões laterais e do meio do mouse (o esquerdo e o direito não: iam travar tudo)
+    const ouvirMouse = (ev) => {
+      if (![1, 3, 4].includes(ev.button)) return;
+      ev.preventDefault(); ev.stopPropagation();
+      terminar();
+      aoTerminar({ code: 'Mouse' + ev.button, key: ev.button === 1 ? 'Botão do meio' : ev.button === 3 ? 'Botão lateral 1' : 'Botão lateral 2', mouse: true });
+    };
     window.addEventListener('keydown', ouvir, true);
+    // o clique que abriu a captura já passou; só a partir do próximo
+    if (aceitaMouse) setTimeout(() => { if (capturandoTecla) window.addEventListener('mousedown', ouvirMouse, true); }, 50);
   };
 }
 function aceleradorDe(ev){
@@ -1248,10 +1363,10 @@ ligarCapturaDeTecla($('tecla-surdo'), (ev) => {
   mudarConfig({ atalhoSurdo: p.join('+') });
 });
 ligarCapturaDeTecla($('tecla-ptt'), (ev) => {
-  // a tecla de falar é do SITE (dentro da call): guarda o código e o nome, como ele faz
-  const nome = ev.key.length === 1 ? ev.key.toUpperCase() : ev.key;
+  // a tecla de falar vale no site (janela em foco) E no ajudante nativo (jogo na frente)
+  const nome = ev.mouse ? ev.key : ev.key.length === 1 ? ev.key.toUpperCase() : ev.key;
   mudarConfig({ teclaPtt: ev.code, nomeTeclaPtt: nome });
-});
+}, true);
 
 carregarConfig().then(pintarAjustes);
 
@@ -1315,3 +1430,6 @@ ponte.versao().then((v) => {
   });
   ponte.aoMudarEstadoAtualizacao((d) => estado(d.estado, d));
 })();
+
+// pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
+window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear };

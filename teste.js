@@ -7,7 +7,9 @@
  * conectar P2P, testa botão direito → menu de volume, mic/fone espelhados,
  * sair, entrar por convite, atalhos, e que fechar a janela encerra o app.
  *
- * Não usa Firebase (não loga): o que é conta/amigos/chat é testado à mão.
+ * Firebase (conta, amigos, chat, convite, perdida, bloqueio) roda de
+ * ponta a ponta com duas contas de teste SE a senha delas estiver em
+ * BIGAS_TESTE_SENHA (senão essa parte é pulada e avisada).
  *
  * Como funciona: rodado pelo Node, copia o app pra uma pasta temporária
  * (com este arquivo como "main") e abre o Electron nela. Dentro do
@@ -16,7 +18,8 @@
 const path = require('path');
 const fs = require('fs');
 
-const ARQUIVOS = ['main.js', 'preload.js', 'home.html', 'home.js', 'seletor-de-tela.html', 'seletor-de-tela.js', 'icone.png'];
+const ARQUIVOS = ['main.js', 'preload.js', 'home.html', 'home.js', 'seletor-de-tela.html', 'seletor-de-tela.js', 'sobreposicao.html', 'sobreposicao.js', 'icone.png'];
+const AJUDANTES = ['gpuprio.exe', 'teclas.exe', 'somdoapp.exe', 'rnnoise.wasm'];
 
 if (!process.versions.electron) {
   /* ---------------- modo Node: prepara e dispara o Electron ---------------- */
@@ -28,13 +31,14 @@ if (!process.versions.electron) {
   fs.mkdirSync(pasta, { recursive: true });
   for (const a of ARQUIVOS) fs.copyFileSync(path.join(raiz, a), path.join(pasta, a));
   fs.mkdirSync(path.join(pasta, 'nativo'), { recursive: true });
-  if (fs.existsSync(path.join(raiz, 'nativo', 'gpuprio.exe'))) fs.copyFileSync(path.join(raiz, 'nativo', 'gpuprio.exe'), path.join(pasta, 'nativo', 'gpuprio.exe'));
+  for (const a of AJUDANTES) if (fs.existsSync(path.join(raiz, 'nativo', a))) fs.copyFileSync(path.join(raiz, 'nativo', a), path.join(pasta, 'nativo', a));
   fs.copyFileSync(__filename, path.join(pasta, 'teste.js'));
   const pkg = JSON.parse(fs.readFileSync(path.join(raiz, 'package.json'), 'utf8'));
   fs.writeFileSync(path.join(pasta, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, main: 'teste.js' }));
 
   const exe = path.join(raiz, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron');
-  const env = Object.assign({}, process.env, { BIGAS_APP_DIR: raiz });
+  // BIGAS_INVISIVEL: o app não mostra sobreposição, notificação, Explorer, nem mexe na área de transferência
+  const env = Object.assign({}, process.env, { BIGAS_APP_DIR: raiz, BIGAS_INVISIVEL: '1' });
   delete env.ELECTRON_RUN_AS_NODE; // se vier ligado do terminal, o Electron vira Node puro e nada funciona
   const r = spawnSync(exe, [pasta], { env, stdio: 'inherit', timeout: 240000 });
   process.exit(r.status == null ? 1 : r.status);
@@ -48,7 +52,10 @@ const APP_DIR = process.env.BIGAS_APP_DIR || __dirname;
 
 class BWInvisivel extends RealBW {
   constructor(opts) { super(Object.assign({}, opts || {}, { show: false })); }
+  show() {}            // nada aparece na tela durante o teste — nunca
+  showInactive() {}
 }
+process.env.BIGAS_INVISIVEL = '1';
 // main.js faz require('electron') → recebe um espelho com a BrowserWindow
 // invisível; e os pacotes (electron-updater) vêm do node_modules do app
 const electronEspelho = new Proxy(electron, { get(t, k) { return k === 'BrowserWindow' ? BWInvisivel : t[k]; } });
@@ -66,6 +73,7 @@ Module._load = function (request, parent, isMain) {
 
 const { app, ipcMain, globalShortcut } = electron;
 app.setPath('userData', path.join(__dirname, 'dados-teste')); // nunca a sessão de verdade
+app.setPath('desktop', path.join(__dirname, 'dados-teste'));  // o diagnóstico "salva na Área de Trabalho" — aqui, não na de verdade
 process.on('unhandledRejection', (e) => console.log('REJEICAO', (e && e.stack) || e));
 process.on('uncaughtException', (e) => console.log('EXCECAO', (e && e.stack) || e));
 
@@ -92,6 +100,7 @@ app.whenReady().then(async () => {
   if (!janela) { imprimir(); return app.exit(1); }
   ok('janela invisivel', !janela.isVisible());
 
+  janela.webContents.setAudioMuted(true); // toque de chamada da casa: nunca nas caixas do André durante o teste
   const errosHome = [];
   janela.webContents.on('console-message', (ev, nivel, msg) => { if (nivel >= 2) errosHome.push(msg); });
   const js = (codigo) => janela.webContents.executeJavaScript(codigo);
@@ -127,6 +136,8 @@ app.whenReady().then(async () => {
   await espera(300);
   const r = JSON.parse(await js('JSON.stringify(document.getElementById("palco").getBoundingClientRect())'));
   ok('palco medido', r.width > 300 && r.height > 300, JSON.stringify(r));
+
+  await js('window.bigasHome.configMudar({ ruidoForte: true })');
 
   // 1) CHAMAR: a casa pede pro app abrir a call e criar a sala
   const errosView = [];
@@ -166,7 +177,17 @@ app.whenReady().then(async () => {
     // app, tem que sair com restrictOwnAudio (som do próprio app excluído).
     // O seletor de tela do app abre (invisível) — o teste escolhe a 1ª tela.
     const fontes = await electron.desktopCapturer.getSources({ types: ['screen'] });
-    setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id), 1500);
+    const acharSeletor = () => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar|Transmitir — Bigas Voice/.test(w.getTitle())) || null;
+    // enquanto o seletor de verdade está aberto (invisível), lê o que ele mostra:
+    // nome dos monitores (modelo · resolução · principal) e a lista "som de onde"
+    (async () => {
+      const sel = await esperarAte(acharSeletor, 15000, 100);
+      const dom = sel ? await esperarAte(() => sel.webContents.executeJavaScript(`(function(){ var n=[...document.querySelectorAll('.fonte .nome span')].map(e=>e.textContent); if(!n.length) return null; return JSON.stringify({ nomes:n.slice(0,4), som:[...document.getElementById('sel-som').options].map(o=>o.textContent), somVisivel: !document.getElementById('linha-som-de').hidden }); })()`).catch(() => null), 5000, 200) : null;
+      let d = null; try { d = JSON.parse(dom); } catch {}
+      ok('tela de transmitir (de verdade): monitores com nome e resolução', !!(d && d.nomes.some((n) => /×\d+/.test(n))), d ? d.nomes.join(' | ') : 'sem DOM');
+      ok('tela de transmitir (de verdade): "som de onde" com a saída padrão + apps com som', !!(d && d.somVisivel && d.som.length >= 1 && /padrão/i.test(d.som[0])), d ? d.som.join(' | ').slice(0, 200) : 'sem DOM');
+      ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id);
+    })();
     const cap = await view.webContents.executeJavaScript(`
       (async function(){
         try{
@@ -181,9 +202,11 @@ app.whenReady().then(async () => {
 
     // SELETOR CANCELADO e depois usado de novo: o ouvinte do pedido antigo
     // não pode engolir a escolha do pedido novo (era um bug real)
+    // o seletor anterior ainda pode estar fechando: espera sumir, senão o teste fecha o velho e o novo fica aberto pra sempre
+    await esperarAte(() => acharSeletor() ? null : 'sumiu', 8000, 100);
     const cancelado = view.webContents.executeJavaScript(`
       navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(s => { s.getTracks().forEach(t => t.stop()); return 'ABRIU'; }, e => e.name)`, true);
-    const seletor = await esperarAte(() => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar/.test(w.getTitle())) || null, 6000, 150);
+    const seletor = await esperarAte(() => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar|Transmitir — Bigas Voice/.test(w.getTitle())) || null, 15000, 150);
     ok('seletor de tela abriu (invisível)', !!seletor);
     if (seletor) seletor.close();
     ok('cancelar o seletor recusa a captura (erro, não trava)', /NotAllowedError|AbortError/.test(String(await cancelado)), String(await cancelado));
@@ -231,10 +254,54 @@ app.whenReady().then(async () => {
     ok('tela de transmitir devolve {id, qualidade, som}', !!(escolha && escolha.id && escolha.qualidade === '1080-30-5' && escolha.som === false), JSON.stringify(escolha));
     jt.destroy();
 
+    // SOM DE UM APP SÓ: uma janela invisível toca 440 Hz a -80 dB (inaudível) —
+    // o app captura o processo por fora (somdoapp.exe) e a página vira faixa.
+    // O 440 Hz tem que aparecer na faixa que iria pros amigos.
+    {
+      const tom = new RealBW({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
+      await tom.loadURL('data:text/html,<script>const c=new AudioContext();const o=c.createOscillator();o.frequency.value=440;const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();</script>');
+      await espera(800);
+      setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, { id: fontes[0] && fontes[0].id, qualidade: 'auto', som: true, somDe: process.pid }), 1500);
+      const r = await Promise.race([view.webContents.executeJavaScript(`
+        (async function(){
+          try{
+            const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false }, systemAudio: 'include' });
+            const t = s.getAudioTracks()[0]; if (!t) return JSON.stringify({ erro: 'sem faixa de áudio' });
+            const ctx = new AudioContext({ sampleRate: 48000 });
+            const src = ctx.createMediaStreamSource(new MediaStream([t])); const an = ctx.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0; src.connect(an);
+            await new Promise(r => setTimeout(r, 3000));
+            const f = new Float32Array(an.frequencyBinCount); an.getFloatFrequencyData(f);
+            const bin = Math.round(440 / (48000 / 8192));
+            const pico = Math.max(f[bin - 1], f[bin], f[bin + 1]);
+            const resto = [...f.slice(200, 600)].sort((a, b) => a - b); const mediana = resto[Math.floor(resto.length / 2)];
+            s.getTracks().forEach(x => x.stop()); ctx.close();
+            return JSON.stringify({ ativo: !!(window.__bigasSomDoApp && window.__bigasSomDoApp.ativo), label: t.label, pico: Math.round(pico), mediana: Math.round(mediana) });
+          }catch(e){ return JSON.stringify({ erro: e.name + ': ' + e.message }); }
+        })()`, true), espera(15000).then(() => '{"erro":"demorou"}')]);
+      let sj = null; try { sj = JSON.parse(r); } catch {}
+      ok('SOM DE UM APP: a faixa de áudio da captura passou a ser a nossa (worklet)', !!(sj && sj.ativo && /Destination/i.test(sj.label || '')), r);
+      ok('SOM DE UM APP: o 440 Hz do processo escolhido chegou na faixa (loopback por processo)', !!(sj && Number.isFinite(sj.pico) && sj.pico > sj.mediana + 20), r);
+      tom.destroy();
+    }
+
+    // PTT GLOBAL: escolher "segurar pra falar" liga o ajudante teclas.exe; voltar pra voz desliga
+    {
+      const lista = () => new Promise((r) => require('child_process').execFile('tasklist.exe', ['/fi', 'IMAGENAME eq teclas.exe', '/fo', 'csv', '/nh'], { windowsHide: true }, (e, out) => r(e ? '' : String(out))));
+      await js('window.bigasHome.configMudar({ fala: "ptt", teclaPtt: "KeyV", nomeTeclaPtt: "V" })');
+      const ligou = await esperarAte(async () => /teclas\.exe/i.test(await lista()) ? 'sim' : null, 5000, 300);
+      ok('PTT GLOBAL: "segurar pra falar" liga o ajudante teclas.exe durante a call', ligou === 'sim');
+      await js('window.bigasHome.configMudar({ fala: "voz" })');
+      const desligou = await esperarAte(async () => /teclas\.exe/i.test(await lista()) ? null : 'sim', 5000, 300);
+      ok('PTT GLOBAL: voltar pra "voz aberta" desliga o ajudante', desligou === 'sim');
+    }
+
     // ===== DUAS PONTAS: um "amigo" entra pelo link numa janela invisível =====
+    // (as duas pontas nascem MUDAS: no mesmo PC, mic + caixa = eco/loop de verdade)
+    view.webContents.setAudioMuted(true);
     let avisoConectada = false;
     ipcMain.on('call:aviso', (ev, o) => { if (o === 'conectada') avisoConectada = true; });
     const amigo = new RealBW({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
+    amigo.webContents.setAudioMuted(true);
     await amigo.loadURL(link);
     await amigo.webContents.executeJavaScript(`var n=document.getElementById('meu-nome'); n.value='Amigo2'; n.dispatchEvent(new Event('input',{bubbles:true})); true`).catch(() => {});
     const conectou = await esperarAte(() => view.webContents.executeJavaScript(
@@ -256,6 +323,35 @@ app.whenReady().then(async () => {
         const saida = gpu ? String(execFileSync(exe, [String(gpu.pid)], { windowsHide: true })).trim() : 'sem processo de GPU';
         ok('prioridade de GPU alta no processo de GPU durante a call', /classe=(4|5)/.test(saida), saida);
       } else ok('ajudante gpuprio.exe presente (compilar em nativo/)', false, 'faltando');
+    }
+
+    // SOBREPOSIÇÃO: a view conta quem está na call (eu + amigo) — a casa e a janelinha recebem
+    {
+      const gente = await esperarAte(() => js('(function(){ var g = window.__bigasEstado.call.gente; return g && g.length === 2 ? JSON.stringify(g) : null; })()'), 6000, 300);
+      ok('sobreposição: lista "quem está na call" chega com as duas pessoas', !!gente, gente);
+      ok('sobreposição: nada apareceu na tela (modo invisível)', !electron.BaseWindow.getAllWindows().some((w) => /sobreposição/.test(w.getTitle()) && w.isVisible()));
+    }
+    // PING / RECONECTANDO: a view manda rede:<religando>:<ping> e o painel mostra
+    {
+      const rede = await esperarAte(() => js('(function(){ var c = window.__bigasEstado.call; return typeof c.ping === "number" && c.religando === false ? "ok" : null; })()'), 6000, 300);
+      ok('painel da call recebe ping/estado da rede', rede === 'ok');
+    }
+    // RUÍDO FORTE (RNNoise): o microfone do site passa pelo worklet; desligar volta pro mic direto
+    {
+      const antes = await view.webContents.executeJavaScript(`JSON.stringify({ rn: !!(window.__bigasRnnoise && window.__bigasRnnoise.ativo), pronto: !!(window.__bigasRnnoise && window.__bigasRnnoise.pronto), label: est.streamMic ? est.streamMic.getAudioTracks()[0].label : null })`);
+      let aj = null; try { aj = JSON.parse(antes); } catch {}
+      ok('RUÍDO FORTE: com a chave ligada o site recebe o microfone já filtrado (RNNoise carregou)', !!(aj && aj.rn && aj.pronto && /Destination/i.test(aj.label || '')), antes);
+      await js('window.bigasHome.configMudar({ ruidoForte: false })');
+      const depois = await esperarAte(() => view.webContents.executeJavaScript(`(function(){ var l = est.streamMic ? est.streamMic.getAudioTracks()[0].label : ''; return l && !/Destination/i.test(l) ? l : null; })()`), 8000, 400);
+      const porque = depois ? '' : await view.webContents.executeJavaScript(`JSON.stringify({ querido: window.__bigasRnnoise.querido, label: est.streamMic && est.streamMic.getAudioTracks()[0].label, estado: est.streamMic && est.streamMic.getAudioTracks()[0].readyState, casa: null })`) + ' casa=' + (await js('window.__bigasEstado.call.estado'));
+      ok('RUÍDO FORTE: desligar no meio da call troca pro microfone direto, sem derrubar nada', !!depois, depois || porque);
+    }
+    // DIAGNÓSTICO: um arquivo com app + placa + call + relatório do site
+    {
+      const r = await js('window.bigasHome.diagnostico({ teste: true })');
+      const t = (r && r.texto) || '';
+      ok('diagnóstico gerado com app, placa, call e relatório do site', /DIAGNÓSTICO DO BIGAS VOICE/.test(t) && /--- call ---/.test(t) && /relatório do site/.test(t) && /DIAGNÓSTICO DO FRAG|VERSÃO/.test(t), (r && r.caminho) + ' ' + t.length + ' chars');
+      ok('diagnóstico salvo na pasta de teste (não na Área de Trabalho de verdade)', !!(r && r.caminho && r.caminho.includes('dados-teste') && fs.existsSync(r.caminho)), r && r.caminho);
     }
 
     if (conectou) {
@@ -322,9 +418,11 @@ app.whenReady().then(async () => {
     await espera(900);
     ok('sair pela casa fecha a call', janela.contentView.children.length === 0);
   }
-  const avisosNormais = /favicon|ntfy|429|Failed to load resource|net::|perfil video|servidor entupido/i;
+  await testarFirebase(janela, js, ok, esperarAte, espera);
+
+  const avisosNormais = /favicon|ntfy|429|Failed to load resource|net::|perfil video|servidor entupido|permission-denied|Missing or insufficient/i;
   ok('view sem erro de JS grave', errosView.filter((m) => !avisosNormais.test(m)).length === 0, errosView.join(' | ').slice(0, 400));
-  ok('home sem erro de JS ate o fim', errosHome.filter((m) => !/favicon/i.test(m)).length === 0, errosHome.join(' | ').slice(0, 400));
+  ok('home sem erro de JS ate o fim', errosHome.filter((m) => !/favicon|permission-denied/i.test(m)).length === 0, errosHome.join(' | ').slice(0, 400));
 
   // fechar a janela tem que ENCERRAR o app (nada em segundo plano)
   let encerrou = false;
@@ -332,5 +430,111 @@ app.whenReady().then(async () => {
   janela.close();
   setTimeout(() => { if (!encerrou) { encerrou = true; ok('fechar a janela encerra o app (sem segundo plano)', false, 'processo continuou vivo'); imprimir(); app.exit(1); } }, 3000);
 });
+
+/* =====================================================================
+ * FIREBASE DE PONTA A PONTA — duas contas de teste, de verdade, no
+ * projeto de verdade (as REGRAS publicadas é que valem). Só roda com a
+ * senha das contas em BIGAS_TESTE_SENHA (as contas são criadas na
+ * primeira vez). Sem a senha, pula e avisa.
+ * ================================================================== */
+async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
+  const senha = process.env.BIGAS_TESTE_SENHA;
+  if (!senha) { console.log('  PULADO Firebase de ponta a ponta (defina BIGAS_TESTE_SENHA pra rodar)'); return; }
+  const NICK_A = 'teste_bigas_a', NICK_B = 'teste_bigas_b';
+  const janelaB = new RealBW({ show: false, width: 1280, height: 820, webPreferences: { contextIsolation: true, sandbox: true, partition: 'teste-b', preload: path.join(APP_DIR, 'preload.js') } });
+  janelaB.webContents.setAudioMuted(true);
+  await janelaB.loadFile(path.join(APP_DIR, 'home.html'));
+  const jsB = (c) => janelaB.webContents.executeJavaScript(c);
+  await esperarAte(() => jsB('!!window.__bigasEstado'), 8000);
+  await espera(1500);
+
+  async function logar(js, nick) {
+    await js(`window.confirm = () => true; document.getElementById('nick').value = ${JSON.stringify(nick)}; document.getElementById('senha').value = ${JSON.stringify(senha)}; document.getElementById('btn-entrar').click(); true`);
+    let r = await esperarAte(() => js(`getComputedStyle(document.getElementById('tela-casa')).display === 'flex' && window.__bigasEstado.eu.nick ? 'ok' : (document.getElementById('erro-login').textContent || null)`), 15000, 300);
+    if (r !== 'ok' && /errados/.test(String(r))) {
+      // primeira vez: cria a conta
+      await js(`document.getElementById('btn-criar').click(); document.getElementById('nick').value = ${JSON.stringify(nick)}; document.getElementById('senha').value = ${JSON.stringify(senha)}; document.getElementById('btn-criar').click(); true`);
+      r = await esperarAte(() => js(`getComputedStyle(document.getElementById('tela-casa')).display === 'flex' && window.__bigasEstado.eu.nick ? 'ok' : (document.getElementById('erro-login').textContent || null)`), 20000, 300);
+    }
+    return r;
+  }
+  ok('FIREBASE: conta A entrou (' + NICK_A + ')', (await logar(jsA, NICK_A)) === 'ok');
+  ok('FIREBASE: conta B entrou (' + NICK_B + ')', (await logar(jsB, NICK_B)) === 'ok');
+  const uidA = await jsA('window.__bigasEstado.eu.uid'), uidB = await jsB('window.__bigasEstado.eu.uid');
+  if (!uidA || !uidB) { janelaB.destroy(); return; }
+  const temAmigo = (js, uid) => js(`window.__bigasEstado.amigos.has(${JSON.stringify(uid)})`);
+
+  // limpeza de uma rodada anterior que tenha morrido no meio
+  if (await temAmigo(jsA, uidB)) { await jsA(`window.__bigasEstado.tirarAmigo(${JSON.stringify(uidB)}, ${JSON.stringify(NICK_B)})`); }
+  await esperarAte(async () => (!(await temAmigo(jsA, uidB)) && !(await temAmigo(jsB, uidA))) ? 'ok' : null, 15000, 500);
+  if (await temAmigo(jsB, uidA)) { await jsB(`window.__bigasEstado.tirarAmigo(${JSON.stringify(uidA)}, ${JSON.stringify(NICK_A)})`); await esperarAte(async () => !(await temAmigo(jsB, uidA)) ? 'ok' : null, 10000, 500); }
+
+  // pedido de amizade A → B, B aceita, os dois lados ficam amigos
+  await jsA(`document.getElementById('add-nick').value = ${JSON.stringify(NICK_B)}; document.getElementById('btn-add').click(); true`);
+  const aviso = await esperarAte(() => jsA(`document.getElementById('erro-add').textContent || null`), 10000, 300);
+  ok('FIREBASE: pedido de amizade enviado', /enviado|já tinha/i.test(String(aviso)), aviso);
+  const pedidoB = await esperarAte(() => jsB(`(function(){ var b = document.querySelector('#pedidos .cartinha b'); return b && b.textContent === ${JSON.stringify(NICK_A)} ? 'ok' : null; })()`), 15000, 300);
+  ok('FIREBASE: B recebeu o pedido em tempo real', pedidoB === 'ok');
+  await jsB(`var s = document.querySelector('#pedidos .cartinha .sim'); if (s) s.click(); true`);
+  const amigosOk = await esperarAte(async () => ((await temAmigo(jsA, uidB)) && (await temAmigo(jsB, uidA))) ? 'ok' : null, 20000, 500);
+  ok('FIREBASE: amizade mútua (A tem B, B tem A) depois do aceite', amigosOk === 'ok');
+  const presenca = await esperarAte(() => jsB(`(function(){ var a = window.__bigasEstado.amigos.get(${JSON.stringify(uidA)}); return a && a.presenca && a.presenca.ultimoVisto ? 'ok' : null; })()`), 15000, 500);
+  ok('FIREBASE: B vê a presença de A (batida de "online")', presenca === 'ok');
+
+  // chat A → B
+  const texto = 'oi ' + Date.now();
+  await jsA(`(function(){ var l = [...document.querySelectorAll('.amigo')].find(x => x.querySelector('.nome').textContent.trim().startsWith(${JSON.stringify(NICK_B)})); if (l) l.click(); })(); true`);
+  await esperarAte(() => jsA(`document.getElementById('sec-chat').classList.contains('mostra') ? 'ok' : null`), 5000, 200);
+  await jsA(`document.getElementById('chat-texto').value = ${JSON.stringify(texto)}; document.getElementById('btn-enviar').click(); true`);
+  const chegou = await esperarAte(() => jsB(`(function(){ var a = window.__bigasEstado.amigos.get(${JSON.stringify(uidA)}); return a && a.ultima && a.ultima.texto === ${JSON.stringify(texto)} ? (a.naoLidas ? 'nao-lida' : 'lida') : null; })()`), 15000, 300);
+  ok('FIREBASE: mensagem chegou em B como NÃO LIDA (bolinha)', chegou === 'nao-lida', chegou);
+  await jsB(`(function(){ var l = [...document.querySelectorAll('.amigo')].find(x => x.querySelector('.nome').textContent.trim().startsWith(${JSON.stringify(NICK_A)})); if (l) l.click(); })(); true`);
+  const noChat = await esperarAte(() => jsB(`[...document.querySelectorAll('#mensagens .texto')].some(e => e.textContent === ${JSON.stringify(texto)}) ? 'ok' : null`), 10000, 300);
+  ok('FIREBASE: B abre a conversa e vê a mensagem', noChat === 'ok');
+  await jsA(`document.getElementById('btn-fechar-chat').click(); true`);
+  await jsB(`document.getElementById('btn-fechar-chat').click(); true`);
+
+  // chamada A → B: o convite toca em B; B recusa; A vê "recusou" e a call fecha
+  await jsA(`(function(){ var l = [...document.querySelectorAll('.amigo')].find(x => x.querySelector('.nome').textContent.trim().startsWith(${JSON.stringify(NICK_B)})); if (l) l.querySelector('.chamar').click(); })(); true`);
+  const tocou = await esperarAte(() => jsB(`document.getElementById('convite').classList.contains('tem') && document.getElementById('convite-nick').textContent === ${JSON.stringify(NICK_A)} ? 'ok' : null`), 30000, 300);
+  ok('FIREBASE: chamada de A TOCA em B (convite em tempo real, regras deixaram)', tocou === 'ok');
+  await jsB(`document.getElementById('btn-recusar').click(); true`);
+  const recusou = await esperarAte(() => jsA(`(!document.getElementById('painel-call').classList.contains('tem') && /recusou/.test(document.getElementById('recado').textContent)) ? 'ok' : null`), 20000, 300);
+  ok('FIREBASE: B recusou → A vê "recusou" e a call fecha', recusou === 'ok');
+  await esperarAte(() => jsB(`!document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 8000, 300);
+
+  // chamada perdida: A chama, desiste; B fica com "te ligou" e histórico
+  await jsA(`(function(){ var l = [...document.querySelectorAll('.amigo')].find(x => x.querySelector('.nome').textContent.trim().startsWith(${JSON.stringify(NICK_B)})); if (l) l.querySelector('.chamar').click(); })(); true`);
+  await esperarAte(() => jsB(`document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 30000, 300);
+  await jsA(`document.getElementById('btn-sair-call').click(); true`);
+  const perdida = await esperarAte(() => jsB(`(function(){ var b = document.querySelector('#perdidas .cartinha b'); return b && b.textContent.startsWith(${JSON.stringify(NICK_A)}) ? 'ok' : null; })()`), 20000, 300);
+  ok('FIREBASE: A desistiu → B fica com "chamada perdida"', perdida === 'ok');
+  const histB = await esperarAte(() => jsB(`(function(){ var h = window.__bigasEstado.historicoLer(); return h.some(x => x.tipo === 'perdida' && x.nick === ${JSON.stringify(NICK_A)}) ? 'ok' : null; })()`), 8000, 300);
+  ok('histórico: a perdida entrou no histórico de B', histB === 'ok');
+  const histA = await esperarAte(async () => { const n = await jsA(`(function(){ var h = window.__bigasEstado.historicoLer(); return h.filter(x => x.tipo === 'fiz' && x.nick === ${JSON.stringify(NICK_B)}).length; })()`); return n >= 2 ? n : null; }, 10000, 400);
+  ok('histórico: as chamadas feitas entraram no histórico de A', histA >= 2, String(histA));
+  await jsA(`document.getElementById('btn-historico').click(); true`);
+  await espera(300);
+  ok('histórico: a lateral abre com as entradas', (await jsA(`document.getElementById('sec-historico').classList.contains('mostra') && document.querySelectorAll('#historico .cartinha').length`)) >= 2);
+  await jsA(`document.getElementById('btn-fechar-historico').click(); true`);
+
+  // bloqueio: B bloqueia A → A não consegue mais mandar mensagem (regra do servidor); B desbloqueia
+  await jsB(`window.__bigasEstado.bloquear(${JSON.stringify(uidA)}, ${JSON.stringify(NICK_A)})`);
+  await esperarAte(() => jsB(`window.__bigasEstado.bloqueados.has(${JSON.stringify(uidA)}) ? 'ok' : null`), 10000, 300);
+  await jsA(`(function(){ var l = [...document.querySelectorAll('.amigo')].find(x => x.querySelector('.nome').textContent.trim().startsWith(${JSON.stringify(NICK_B)})); if (l) l.click(); })(); true`);
+  await esperarAte(() => jsA(`document.getElementById('sec-chat').classList.contains('mostra') ? 'ok' : null`), 5000, 200);
+  await jsA(`document.getElementById('chat-texto').value = 'bloqueado?'; document.getElementById('btn-enviar').click(); true`);
+  const negado = await esperarAte(() => jsA(`/não são mais amigos|bloqueou/.test(document.getElementById('recado').textContent) ? 'ok' : null`), 15000, 300);
+  ok('FIREBASE: bloqueado não consegue mandar mensagem (o servidor recusa)', negado === 'ok');
+  await jsA(`document.getElementById('btn-fechar-chat').click(); true`);
+  await jsB(`window.__bigasEstado.desbloquear(${JSON.stringify(uidA)})`);
+  await esperarAte(() => jsB(`!window.__bigasEstado.bloqueados.has(${JSON.stringify(uidA)}) ? 'ok' : null`), 10000, 300);
+
+  // desfazer: A tira B → B perde A também
+  await jsA(`window.__bigasEstado.tirarAmigo(${JSON.stringify(uidB)}, ${JSON.stringify(NICK_B)})`);
+  const desfez = await esperarAte(async () => (!(await temAmigo(jsA, uidB)) && !(await temAmigo(jsB, uidA))) ? 'ok' : null, 20000, 500);
+  ok('FIREBASE: tirar da lista desfaz dos DOIS lados', desfez === 'ok');
+  janelaB.destroy();
+}
 
 require('./main.js');

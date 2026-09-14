@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self'">
+<title>Bigas Voice — sobreposição</title>
+<style>
+  /* Janelinha transparente por cima do jogo: quem está na call e quem
+     está falando. Sem fundo, sem borda, sem mouse — só as fichas. */
+  html, body{ margin:0; background:transparent; overflow:hidden; user-select:none }
+  body{ font:600 13px/1.2 system-ui,-apple-system,'Segoe UI',sans-serif; color:#fff; padding:6px }
+  .gente{ display:flex; flex-direction:column; gap:6px; align-items:flex-start }
+  .ficha{
+    display:flex; align-items:center; gap:8px; padding:5px 10px 5px 5px; border-radius:999px;
+    background:rgba(12,13,16,.72); border:1px solid rgba(255,255,255,.08);
+    text-shadow:0 1px 2px rgba(0,0,0,.8); max-width:260px;
+    transition:opacity .15s;
+  }
+  .ficha.calado{ opacity:.55 }
+  .av{
+    width:26px; height:26px; border-radius:50%; background:#2a3040; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800; color:#a2aab8;
+    box-shadow:0 0 0 2px transparent; transition:box-shadow .1s;
+  }
+  .ficha.fala .av{ box-shadow:0 0 0 2.5px #3fd07a; color:#fff }
+  .ficha.eu .av{ background:#0891b2; color:#fff }
+  .nome{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .marca{ font-size:11px; opacity:.85 }
+</style>
+</head>
+<body>
+  <div class="gente" id="gente"></div>
+  <script src="sobreposicao.js"></script>
+</body>
+</html>
