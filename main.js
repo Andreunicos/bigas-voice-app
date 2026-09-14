@@ -63,7 +63,7 @@ function criarJanelaPrincipal(){
   janelaPrincipal = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 900,
+    minWidth: 1100, // trilho 66 + amigos 290 + chat 340 = 696; sobra ≥ 400 pra call
     minHeight: 600,
     title: 'Bigas Voice',
     icon: ICONE,

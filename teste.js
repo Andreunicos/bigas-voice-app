@@ -179,7 +179,6 @@ app.whenReady().then(async () => {
 
     // SELETOR CANCELADO e depois usado de novo: o ouvinte do pedido antigo
     // não pode engolir a escolha do pedido novo (era um bug real)
-    const janelasAntes = electron.BaseWindow.getAllWindows().length;
     const cancelado = view.webContents.executeJavaScript(`
       navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(s => { s.getTracks().forEach(t => t.stop()); return 'ABRIU'; }, e => e.name)`, true);
     const seletor = await esperarAte(() => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar/.test(w.getTitle())) || null, 6000, 150);
