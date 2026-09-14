@@ -27,6 +27,8 @@ if (!process.versions.electron) {
   fs.rmSync(pasta, { recursive: true, force: true });
   fs.mkdirSync(pasta, { recursive: true });
   for (const a of ARQUIVOS) fs.copyFileSync(path.join(raiz, a), path.join(pasta, a));
+  fs.mkdirSync(path.join(pasta, 'nativo'), { recursive: true });
+  if (fs.existsSync(path.join(raiz, 'nativo', 'gpuprio.exe'))) fs.copyFileSync(path.join(raiz, 'nativo', 'gpuprio.exe'), path.join(pasta, 'nativo', 'gpuprio.exe'));
   fs.copyFileSync(__filename, path.join(pasta, 'teste.js'));
   const pkg = JSON.parse(fs.readFileSync(path.join(raiz, 'package.json'), 'utf8'));
   fs.writeFileSync(path.join(pasta, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, main: 'teste.js' }));
@@ -244,6 +246,17 @@ app.whenReady().then(async () => {
     // vigia da placa: durante a call o app mede a GPU e a casa mostra "placa N%"
     const gpuTxt = await esperarAte(() => js('(/placa \\d+%/.test(document.getElementById("call-sub").textContent) ? document.getElementById("call-sub").textContent : null)'), 15000, 500);
     ok('vigia da placa: casa mostra o uso da GPU durante a call', !!gpuTxt, gpuTxt);
+    // prioridade de GPU (o truque do OBS): o processo de GPU do app tem que estar em classe 5 durante a call
+    {
+      const exe = path.join(__dirname, 'nativo', 'gpuprio.exe');
+      if (fs.existsSync(exe)) {
+        await espera(2500);
+        const { execFileSync } = require('child_process');
+        const gpu = app.getAppMetrics().find((m) => m.type === 'GPU');
+        const saida = gpu ? String(execFileSync(exe, [String(gpu.pid)], { windowsHide: true })).trim() : 'sem processo de GPU';
+        ok('prioridade de GPU alta no processo de GPU durante a call', /classe=(4|5)/.test(saida), saida);
+      } else ok('ajudante gpuprio.exe presente (compilar em nativo/)', false, 'faltando');
+    }
 
     if (conectou) {
       // mic/fone: a casa aperta → o site muda → a casa espelha
@@ -285,6 +298,15 @@ app.whenReady().then(async () => {
     ok('encerrar do site fecha a call (view some)', janela.contentView.children.length === 0);
     ok('encerrar nao passou pelo confirm do site', !confirmChamado);
     ok('casa voltou pro descanso (sem "Em chamada")', !(await js('document.getElementById("painel-call").classList.contains("tem")')));
+    {
+      const exe = path.join(__dirname, 'nativo', 'gpuprio.exe');
+      const gpu = app.getAppMetrics().find((m) => m.type === 'GPU');
+      if (fs.existsSync(exe) && gpu) {
+        await espera(1500);
+        const saida = String(require('child_process').execFileSync(exe, [String(gpu.pid)], { windowsHide: true })).trim();
+        ok('ao sair da call a prioridade de GPU volta ao normal', /classe=2/.test(saida), saida);
+      }
+    }
   }
 
   // 2) ENTRAR POR CONVITE: abre direto no link

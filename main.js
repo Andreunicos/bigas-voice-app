@@ -53,7 +53,8 @@ let config = {
   codec: 'auto',
   somDaTela: true,
   captura: 'dxgi',      // 'dxgi' (padrão do Chromium) | 'wgc' (Windows Graphics Capture) — vale ao reabrir
-  prioridadeCaptura: false, // processos de captura/GPU do app um degrau acima do normal durante a call
+  prioridadeCaptura: false, // (CPU) processos do app um degrau acima do normal durante a call — medido: ruído
+  prioridadeGpu: true,      // (GPU) fila da placa atende a captura antes do jogo (como o OBS faz) — vale a pena
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
@@ -273,6 +274,7 @@ async function encerrarCall(motivo){
   try { v.webContents.close(); } catch {}
   if (motivo !== 'trocou') desligarVigiaGpu();
   priorizarCaptura(false);
+  prioridadeGpu(false);
   // "trocou" = já vem outra call no lugar; a casa mesma cuidou da anterior
   if (motivo !== 'trocou') avisarHome('call:estado', { estado: 'encerrada', motivo: motivo || '' });
 }
@@ -596,6 +598,46 @@ function priorizarCaptura(ligar){
   }catch(e){ console.warn('prioridade', e); }
 }
 
+/* ---------------------------------------------------------------------
+ * PRIORIDADE DE GPU (durante a call) — o truque do OBS
+ * ---------------------------------------------------------------------
+ * Com o jogo usando 97% da placa, a captura pega as sobras (~22 de 60).
+ * A prioridade de CPU não muda isso (medido). O que muda é a fila da
+ * PLACA: `D3DKMTSetProcessSchedulingPriorityClass` sobe a classe de
+ * agendamento de GPU dos NOSSOS processos (GPU, captura, a página da
+ * call) — o mesmo que o OBS faz consigo. Chromium não expõe isso; um
+ * ajudante nativo minúsculo (nativo/gpuprio.c) faz a chamada. Nunca toca
+ * no jogo nem injeta nada.
+ * ------------------------------------------------------------------ */
+function caminhoGpuprio(){
+  const empacotado = path.join(process.resourcesPath || '', 'gpuprio.exe');
+  if (app.isPackaged && fs.existsSync(empacotado)) return empacotado;
+  const dev = path.join(__dirname, 'nativo', 'gpuprio.exe');
+  return fs.existsSync(dev) ? dev : null;
+}
+let pidsGpu = [];
+function prioridadeGpu(ligar){
+  if (process.platform !== 'win32') return;
+  const exe = caminhoGpuprio();
+  if (!exe) return;
+  const { execFile } = require('child_process');
+  const aplicar = (pid, classe) => new Promise((r) => execFile(exe, [String(pid), String(classe)], { windowsHide: true, timeout: 4000 }, (e, out) => r(e ? '' : String(out || '').trim())));
+  if (!ligar) {
+    const antigos = pidsGpu; pidsGpu = [];
+    antigos.forEach((pid) => aplicar(pid, 2));
+    return;
+  }
+  if (!config.prioridadeGpu) return;
+  try{
+    for (const m of app.getAppMetrics()) {
+      const alvo = m.type === 'GPU' || m.type === 'Browser' || m.type === 'Tab' || (m.type === 'Utility' && /Video Capture|Audio/i.test(m.name || ''));
+      if (!alvo || pidsGpu.includes(m.pid)) continue;
+      pidsGpu.push(m.pid);
+      aplicar(m.pid, 5).then((r) => { if (r) console.log('gpuprio', m.type, m.name || '', r); });
+    }
+  }catch(e){ console.warn('prioridade gpu', e); }
+}
+
 /* dentro da view: clica no botão do site de criar sala e espera o link */
 const SCRIPT_CRIAR_SALA = `
   (async function(){
@@ -674,7 +716,9 @@ function ligarChamadas(){
   ipcMain.on('call:aviso', (ev, o) => {
     if (!viewCall || ev.sender !== viewCall.webContents) return;
     o = String(o || '');
-    if (o === 'conectada') { avisarHome('call:estado', { estado: 'conectada' }); setTimeout(() => priorizarCaptura(true), 1500); }
+    if (o === 'conectada') { avisarHome('call:estado', { estado: 'conectada' }); setTimeout(() => { priorizarCaptura(true); prioridadeGpu(true); }, 1500); }
+    // a captura de tela nasce num processo novo (Video Capture): reaplica quando ela começa
+    else if (o.startsWith('fonte:') && o !== 'fonte:-') prioridadeGpu(true);
     else if (o.startsWith('fonte:')) diagnosticarCaptura(o.slice(6));
     else if (o.startsWith('controles:')) avisarHome('call:controles', { mudo: o[10] === '1', surdo: o[11] === '1' });
   });
@@ -730,7 +774,7 @@ function ligarChamadas(){
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
-      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura'];
+      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
