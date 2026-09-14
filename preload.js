@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('bigasHome', {
   surdo:         ()  => ipcRenderer.send('call:surdo'),
   aoMudarCall:      (funcao) => { ipcRenderer.on('call:estado', (_ev, dados) => funcao(dados)); },
   aoMudarControles: (funcao) => { ipcRenderer.on('call:controles', (_ev, dados) => funcao(dados)); },
+  aoMedirPlaca:     (funcao) => { ipcRenderer.on('call:gpu', (_ev, dados) => funcao(dados)); },
   palcoMudou:    (rect) => ipcRenderer.send('palco:rect', rect),
 
   // avisos pro sistema

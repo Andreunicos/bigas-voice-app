@@ -791,7 +791,7 @@ function entrarEmEstado(estado, com, papel){
   call.estado = estado;
   if (estado === 'nenhuma') {
     call.com = ''; call.papel = ''; call.link = '';
-    call.mudo = false; call.surdo = false;
+    call.mudo = false; call.surdo = false; call.gpu = null;
     call.extras = [];
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
@@ -817,7 +817,7 @@ function pintarCall(){
     $('call-sub').textContent = call.com;
   } else if (call.estado === 'conectada') {
     $('call-titulo').textContent = '🔊 Em chamada';
-    $('call-sub').textContent = 'com ' + call.com;
+    $('call-sub').textContent = 'com ' + call.com + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
   }
   const naCall = call.estado !== 'nenhuma';
   $('btn-mic').disabled = !naCall; $('btn-surdo').disabled = !naCall;
@@ -847,6 +847,16 @@ $('btn-sair-call').onclick = sairDaCall;
 $('btn-mic').onclick = () => ponte.mic();
 $('btn-surdo').onclick = () => ponte.surdo();
 ponte.aoMudarControles((d) => { call.mudo = !!d.mudo; call.surdo = !!d.surdo; pintarCall(); });
+// a placa de vídeo durante a call: mostra no painel e avisa quando está sufocada
+ponte.aoMedirPlaca((d) => {
+  if (call.estado === 'nenhuma') return;
+  call.gpu = d.gpu;
+  pintarCall();
+  if (d.aviso) {
+    recado('Sua placa de vídeo está a ' + d.gpu + '%. Limita o FPS do jogo (60 num monitor de 60 Hz) — a transmissão entrega o dobro de quadros com folga.', 'mal');
+    ponte.notificar('Bigas Voice', 'Placa a ' + d.gpu + '%: limita o FPS do jogo pra transmitir liso');
+  }
+});
 
 // o processo principal conta o que aconteceu com a call de verdade
 ponte.aoMudarCall(async (d) => {

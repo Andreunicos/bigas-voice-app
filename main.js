@@ -216,6 +216,7 @@ function criarViewCall(){
   viewCall.setBackgroundColor('#0c0d10');
   janelaPrincipal.contentView.addChildView(viewCall);
   posicionarView();
+  ligarVigiaGpu();
 
   const wc = viewCall.webContents;
   const estaView = viewCall;
@@ -269,6 +270,7 @@ async function encerrarCall(motivo){
   }catch{}
   try { if (janelaPrincipal && !janelaPrincipal.isDestroyed()) janelaPrincipal.contentView.removeChildView(v); } catch {}
   try { v.webContents.close(); } catch {}
+  if (motivo !== 'trocou') desligarVigiaGpu();
   // "trocou" = já vem outra call no lugar; a casa mesma cuidou da anterior
   if (motivo !== 'trocou') avisarHome('call:estado', { estado: 'encerrada', motivo: motivo || '' });
 }
@@ -494,6 +496,43 @@ function aplicarNaTransmissao(qualidade, som){
       return 'ok';
     })()
   `).then((r) => { if (r !== 'ok') console.warn('aplicar na transmissão:', r); }).catch(() => {});
+}
+
+/* ---------------------------------------------------------------------
+ * VIGIA DA PLACA DE VÍDEO (durante a call)
+ * ---------------------------------------------------------------------
+ * Medido no PC do André: com o jogo usando 97% da placa a captura entrega
+ * ~22 de 60 quadros; com teto de FPS no jogo (placa a 37%) entrega ~43.
+ * Nenhum método de captura muda isso — folga na placa muda. Então o app
+ * mede a placa (um PowerShell só, contínuo, a cada 5 s) e avisa UMA vez
+ * por call quando ela passa de 90% enquanto a pessoa transmite.
+ * ------------------------------------------------------------------ */
+let vigiaGpu = null;
+function ligarVigiaGpu(){
+  if (vigiaGpu || process.platform !== 'win32') return;
+  const { spawn } = require('child_process');
+  const script = "Get-Counter -Counter '\\GPU Engine(*engtype_3D)\\Utilization Percentage' -SampleInterval 5 -Continuous -ErrorAction SilentlyContinue | ForEach-Object { $t = 0; $_.CounterSamples | ForEach-Object { $t += $_.CookedValue }; [Console]::Out.WriteLine([int]$t); [Console]::Out.Flush() }";
+  try{
+    vigiaGpu = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  }catch(e){ vigiaGpu = null; return; }
+  let seguidas = 0, avisou = false, resto = '';
+  vigiaGpu.stdout.on('data', (buf) => {
+    resto += String(buf);
+    const linhas = resto.split(/\r?\n/); resto = linhas.pop();
+    for (const l of linhas) {
+      const v = parseInt(l, 10);
+      if (!Number.isFinite(v)) continue;
+      avisarHome('call:gpu', { gpu: Math.min(100, v) });
+      seguidas = v >= 90 ? seguidas + 1 : 0;
+      if (seguidas >= 2 && !avisou) { avisou = true; avisarHome('call:gpu', { gpu: Math.min(100, v), aviso: true }); }
+    }
+  });
+  vigiaGpu.on('exit', () => { vigiaGpu = null; });
+}
+function desligarVigiaGpu(){
+  if (!vigiaGpu) return;
+  try { vigiaGpu.kill(); } catch {}
+  vigiaGpu = null;
 }
 
 /* dentro da view: clica no botão do site de criar sala e espera o link */
@@ -813,4 +852,5 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => { saindoDeVerdade = true; });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); });
   app.on('window-all-closed', () => app.quit());
+app.on('will-quit', desligarVigiaGpu);
 }

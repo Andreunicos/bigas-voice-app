@@ -241,6 +241,9 @@ app.whenReady().then(async () => {
     await espera(600);
     ok('casa avisada que a call conectou', avisoConectada);
     ok('casa mostra "Em chamada"', /Em chamada/.test(await js('document.getElementById("call-titulo").textContent')));
+    // vigia da placa: durante a call o app mede a GPU e a casa mostra "placa N%"
+    const gpuTxt = await esperarAte(() => js('(/placa \\d+%/.test(document.getElementById("call-sub").textContent) ? document.getElementById("call-sub").textContent : null)'), 15000, 500);
+    ok('vigia da placa: casa mostra o uso da GPU durante a call', !!gpuTxt, gpuTxt);
 
     if (conectou) {
       // mic/fone: a casa aperta → o site muda → a casa espelha
