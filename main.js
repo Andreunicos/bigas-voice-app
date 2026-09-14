@@ -52,6 +52,7 @@ let config = {
   qualidade: 'auto',    // perfil da transmissão (chaves do site: auto, 1080-60-8…)
   codec: 'auto',
   somDaTela: true,
+  captura: 'dxgi',      // 'dxgi' (padrão do Chromium) | 'wgc' (Windows Graphics Capture) — vale ao reabrir
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
@@ -628,7 +629,7 @@ function ligarChamadas(){
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
-      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela'];
+      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
@@ -782,6 +783,11 @@ function ligarVerificacaoManual(){
 }
 
 /* ------------------------------------------------------------------ */
+// método de captura de tela do Chromium: DXGI (padrão) ou WGC. É uma chave
+// de linha de comando — só vale na próxima abertura do app.
+lerConfig();
+if (config.captura === 'wgc') app.commandLine.appendSwitch('enable-features', 'WebRtcAllowWgcScreenCapturer,WebRtcAllowWgcWindowCapturer');
+
 // uma instância só: abrir de novo traz a janela que já existe pra frente
 if (!app.requestSingleInstanceLock()) {
   app.quit();

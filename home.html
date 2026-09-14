@@ -580,6 +580,13 @@
             <option value="vp8">VP8 — a mais compatível</option>
           </select>
         </div>
+        <div class="bloco">
+          <h3>Método de captura da tela</h3>
+          <div class="cartoes">
+            <button type="button" class="cartao" data-captura="dxgi"><b>DirectX (DXGI)</b><small>O padrão do Chromium. Copia a tela composta pelo Windows.</small></button>
+            <button type="button" class="cartao" data-captura="wgc"><b>Windows (WGC)</b><small>O mesmo do OBS "Window Capture". Pode render mais quadros com jogo pesado. Vale ao reabrir o app.</small></button>
+          </div>
+        </div>
         <div class="ajuste"><div class="txt"><b>Som da tela por padrão</b><small>Mandar o som do jogo/vídeo junto com a imagem (sem as vozes da call).</small></div><button class="chave on" id="chave-som-tela" type="button" aria-label="Som da tela"></button></div>
         <div class="ajuste"><div class="txt"><b>Otimização do Windows pra jogos em janela</b><small>Configuração do próprio Windows (por usuário, sem admin). Com ela ligada, capturar um jogo em janela custa muito menos placa de vídeo. O jogo precisa ser reaberto pra valer.</small></div><button class="chave" id="chave-jogos" type="button" aria-label="Otimização pra jogos em janela"></button></div>
         <small style="color:var(--txt3)">Os dois conselhos que valem pra qualquer PC: jogo em <b>janela sem borda</b> (não tela cheia exclusiva — senão a captura fica presa em poucos quadros) e <b>teto de FPS</b> no jogo igual ao monitor. Com a placa em 100% não sobra pra captura.</small>

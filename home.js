@@ -1066,6 +1066,7 @@ function pintarAjustes(){
   const vol = Number.isFinite(Number(config.volume)) ? Number(config.volume) : 100;
   $('vol-app').value = vol; $('vol-app-txt').textContent = vol + '%';
   $('sel-codec-app').value = config.codec || 'auto';
+  document.querySelectorAll('.cartao[data-captura]').forEach((c) => c.classList.toggle('escolhido', (config.captura || 'dxgi') === c.dataset.captura));
   const cx = $('cartoes-qualidade');
   if (!cx.children.length) QUALIDADES.forEach((q) => {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'cartao'; b.dataset.q = q.id;
@@ -1163,6 +1164,7 @@ $('btn-testar-saida').onclick = async () => {
 
 /* voz: modo, tecla de falar, limpeza, volume, compressão, som da tela, janela */
 document.querySelectorAll('.cartao[data-fala]').forEach((c) => { c.onclick = () => mudarConfig({ fala: c.dataset.fala }); });
+document.querySelectorAll('.cartao[data-captura]').forEach((c) => { c.onclick = async () => { await mudarConfig({ captura: c.dataset.captura }); recado('Método de captura salvo. Vale na próxima vez que abrir o Bigas Voice.', 'bem'); }; });
 $('chave-limpar').onclick = () => mudarConfig({ limpar: config.limpar === false });
 $('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela === false });
 $('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
