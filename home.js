@@ -76,6 +76,7 @@ const call = {
   papel: '',                   // chamando | atendendo
   link: '',                    // link da sala atual (pra chamar mais gente)
   conviteRef: null,            // meu convite (quando fui eu que chamei)
+  extras: [],                  // todos os convites que mandei nesta call (grupo incluso)
   pararConvite: null,
   pararAceito: null,           // (quem atendeu) ouve se quem chamou desligou antes de conectar
   relogio: null,
@@ -739,6 +740,12 @@ async function mandarConvite(amigoUid, amigoNick, link, principal){
     de: eu.uid, deNick: eu.nick, para: amigoUid, paraNick: amigoNick,
     link, estado: 'chamando', quando: serverTimestamp(),
   });
+  // a pessoa saiu da call enquanto o convite viajava: ele nasce morto
+  if (call.estado === 'nenhuma' || call.link !== link) {
+    updateDoc(ref, { estado: 'encerrada' }).catch(() => {});
+    return;
+  }
+  call.extras.push(ref);
   bater();
   if (principal) {
     call.conviteRef = ref;
@@ -749,6 +756,7 @@ async function mandarConvite(amigoUid, amigoNick, link, principal){
       const c = d.data();
       if (c.estado === 'aceita') {
         clearTimeout(call.relogio); pararSom();
+        if (call.estado === 'conectada') return; // já está tudo ligado
         $('call-sub').textContent = amigoNick + ' atendeu — conectando…';
         // atendeu mas não chegou: não fica esperando pra sempre
         call.relogio = setTimeout(() => {
@@ -784,6 +792,7 @@ function entrarEmEstado(estado, com, papel){
   if (estado === 'nenhuma') {
     call.com = ''; call.papel = ''; call.link = '';
     call.mudo = false; call.surdo = false;
+    call.extras = [];
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
     if (call.pararAceito) { call.pararAceito(); call.pararAceito = null; }
@@ -848,10 +857,10 @@ ponte.aoMudarCall(async (d) => {
     pararSom();
     bater();
   } else if (d.estado === 'encerrada') {
-    const ref = call.conviteRef;
+    const refs = call.extras.slice();
     entrarEmEstado('nenhuma');
     bater();
-    await pararMeuConvite(ref);
+    for (const ref of refs) await pararMeuConvite(ref);
     if (d.motivo === 'caiu') recado('A chamada travou e foi fechada.', 'mal');
     else if (d.motivo === 'semInternet') recado('Sem conexão com o Bigas Voice agora.', 'mal');
     else if (d.motivo === 'semLink') recado('O servidor de sinal não respondeu. Tenta de novo.', 'mal');
@@ -914,9 +923,9 @@ function pintarConvite(){
       // já estava numa call? ela dá lugar a esta (o app fecha a antiga
       // sem avisar 'encerrada' — a casa mesma faz a limpeza aqui)
       if (call.estado !== 'nenhuma') {
-        const antigo = call.conviteRef;
+        const antigos = call.extras.slice();
         entrarEmEstado('nenhuma');
-        pararMeuConvite(antigo);
+        antigos.forEach((r) => pararMeuConvite(r));
       }
       entrarEmEstado('conectando', c.deNick, 'atendendo');
       call.link = c.link;

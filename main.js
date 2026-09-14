@@ -581,7 +581,9 @@ function ligarSeletorDeTela(){
       },
     });
 
-    const lista = fontes.map(f => ({
+    // as janelas do próprio app não entram na lista: compartilhar o Bigas
+    // Voice dentro do Bigas Voice só faria espelho de espelho
+    const lista = fontes.filter(f => f.id.startsWith('screen:') || !/^(Bigas Voice|Escolha o que compartilhar)/.test(f.name || '')).map(f => ({
       id: f.id,
       nome: f.name,
       miniatura: f.thumbnail.toDataURL(),
