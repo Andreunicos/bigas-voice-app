@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('bigasHome', {
   versao:       ()         => ipcRenderer.invoke('app:versao'),
   configLer:    ()         => ipcRenderer.invoke('config:ler'),
   configMudar:  (mudancas) => ipcRenderer.invoke('config:mudar', mudancas),
+  jogosJanela:  (ligar)    => ipcRenderer.invoke('windows:jogosJanela', ligar),
   verificarAtualizacao: () => ipcRenderer.send('atualizar:verificar'),
   instalarAtualizacao:  () => ipcRenderer.send('atualizar:instalar'),
   aoMudarEstadoAtualizacao: (funcao) => {

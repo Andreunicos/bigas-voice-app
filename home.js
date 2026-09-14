@@ -932,6 +932,7 @@ window.addEventListener('resize', mandarRectDoPalco);
 $('btn-ajustes').onclick = () => {
   if ($('sec-ajustes').classList.contains('mostra')) { fecharLateral(); return; }
   pintarAjustes();
+  lerJogosJanela();
   mostrarLateral('sec-ajustes');
 };
 $('btn-fechar-ajustes').onclick = () => { fecharLateral(); if (chat.com) mostrarLateral('sec-chat'); };
@@ -960,6 +961,17 @@ async function mudarConfig(mudancas){
   pintarAjustes();
 }
 $('chave-bandeja').onclick = () => mudarConfig({ bandeja: !config.bandeja });
+let jogosJanela = null;
+async function lerJogosJanela(){
+  try { jogosJanela = await ponte.jogosJanela(); } catch { jogosJanela = null; }
+  $('chave-jogos').classList.toggle('on', jogosJanela === true);
+  $('chave-jogos').disabled = jogosJanela === null;
+}
+$('chave-jogos').onclick = async () => {
+  try { jogosJanela = await ponte.jogosJanela(!jogosJanela); } catch { recado('Não consegui mudar essa configuração do Windows.', 'mal'); }
+  $('chave-jogos').classList.toggle('on', jogosJanela === true);
+  recado(jogosJanela ? 'Ligada. Reabre o jogo pra valer.' : 'Desligada. Reabre o jogo pra valer.', jogosJanela ? 'bem' : '');
+};
 $('chave-iniciar').onclick = () => mudarConfig({ iniciarComWindows: !config.iniciarComWindows });
 
 // captura de tecla → acelerador do Electron ("Control+Shift+M")

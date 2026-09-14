@@ -114,6 +114,8 @@ app.whenReady().then(async () => {
   ok('config salva e devolvida', cfg && cfg.atalhoMic === 'Control+Shift+F9');
   ok('atalho global registrado no sistema', globalShortcut.isRegistered('Control+Shift+F9'));
   await js('window.bigasHome.configMudar({ atalhoMic: "Control+Shift+M" })');
+  const jj = await js('window.bigasHome.jogosJanela()'); // só LÊ (nunca muda o Windows no teste)
+  ok('leitura da otimização de jogos em janela do Windows', jj === true || jj === false, String(jj));
 
   // simula "logado" só na tela (sem Firebase): mostra a casa pra medir o palco
   await js(`document.getElementById('tela-login').style.display='none'; document.getElementById('tela-casa').style.display='flex'; true`);

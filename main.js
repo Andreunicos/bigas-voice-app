@@ -492,6 +492,31 @@ function ligarChamadas(){
   });
 
   ipcMain.handle('app:versao', () => app.getVersion());
+
+  // "Otimizações para jogos em janela" do Windows: por usuário, sem admin.
+  // Deixa a captura de um jogo em janela quase de graça (o Windows entrega
+  // o quadro em vez de copiar). Guardado como texto "chave=valor;" numa
+  // string única — mexe SÓ na chave certa e preserva o resto (Auto HDR…).
+  ipcMain.handle('windows:jogosJanela', async (ev, ligar) => {
+    if (process.platform !== 'win32') return null;
+    const { execFile } = require('child_process');
+    const CHAVE = ['HKCU', 'Software', 'Microsoft', 'DirectX', 'UserGpuPreferences'].join('\\');
+    const VALOR = 'DirectXUserGlobalSettings';
+    const reg = (args) => new Promise((r) => execFile('reg.exe', args, { windowsHide: true }, (e, out) => r(e ? '' : String(out || ''))));
+    const ler = async () => {
+      const out = await reg(['query', CHAVE, '/v', VALOR]);
+      const m = out.match(/REG_SZ\s+(.*)$/m);
+      return m ? m[1].trim() : '';
+    };
+    let atual = await ler();
+    if (ligar === true || ligar === false) {
+      const partes = atual.split(';').map((x) => x.trim()).filter((x) => x && !/^SwapEffectUpgradeEnable=/i.test(x));
+      partes.push('SwapEffectUpgradeEnable=' + (ligar ? '1' : '0'));
+      await reg(['add', CHAVE, '/v', VALOR, '/t', 'REG_SZ', '/d', partes.join(';') + ';', '/f']);
+      atual = await ler();
+    }
+    return /SwapEffectUpgradeEnable=1/i.test(atual);
+  });
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo'];
