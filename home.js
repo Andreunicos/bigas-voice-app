@@ -5,7 +5,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, query, where,
-  getDocs, onSnapshot, addDoc, serverTimestamp, limit, orderBy,
+  getDocs, onSnapshot, addDoc, serverTimestamp, limit, orderBy, runTransaction,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
 /* A chave aqui embaixo NÃO é segredo — quem trava o acesso de verdade são
@@ -77,6 +77,7 @@ const call = {
   link: '',                    // link da sala atual (pra chamar mais gente)
   conviteRef: null,            // meu convite (quando fui eu que chamei)
   pararConvite: null,
+  pararAceito: null,           // (quem atendeu) ouve se quem chamou desligou antes de conectar
   relogio: null,
   mudo: false, surdo: false,
 };
@@ -240,6 +241,7 @@ onAuthStateChanged(auth, async (usuario) => {
   desligarTudo();
 
   if (!usuario) {
+    if (call.estado !== 'nenhuma') sairDaCall(); // deslogou no meio de uma call: a call não sobrevive à conta
     eu.uid = null; eu.nick = ''; eu.email = '';
     $('tela-login').style.display = 'flex';
     $('tela-casa').style.display = 'none';
@@ -250,14 +252,25 @@ onAuthStateChanged(auth, async (usuario) => {
   eu.uid = usuario.uid;
   eu.email = (usuario.email || '').endsWith('@bigasvoice.app') ? '' : (usuario.email || '');
   // conta recém-criada: o perfil é gravado logo DEPOIS do login acontecer —
-  // dá uns segundos pra ele aparecer antes de desistir
-  let meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
-  for (let i = 0; i < 12 && !meuDoc.exists(); i++) {
-    await new Promise((r) => setTimeout(r, 400));
-    if (auth.currentUser !== usuario) return; // já deslogou (ex.: nick repetido, conta desfeita)
+  // dá uns segundos pra ele aparecer antes de desistir. E sem internet o
+  // servidor nem responde: aí avisa e tenta de novo, em vez de ficar mudo.
+  let meuDoc = null;
+  try{
     meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
+    for (let i = 0; i < 12 && !meuDoc.exists(); i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      if (auth.currentUser !== usuario) return; // já deslogou (ex.: nick repetido, conta desfeita)
+      meuDoc = await getDoc(doc(db, 'usuarios', usuario.uid));
+    }
+  }catch(e){
+    console.warn('perfil', e);
+    if (auth.currentUser !== usuario) return;
+    $('erro-login').textContent = 'Entrei na conta, mas não consegui carregar seu perfil (' + ((e && e.code) || 'sem rede') + '). Tentando de novo em 5 s…';
+    setTimeout(() => { if (auth.currentUser === usuario && !eu.nick) location.reload(); }, 5000);
+    return;
   }
-  eu.nick = meuDoc.exists() ? meuDoc.data().nick : 'Sem nome';
+  if (auth.currentUser !== usuario) return; // deslogou enquanto o perfil carregava
+  eu.nick = meuDoc && meuDoc.exists() ? meuDoc.data().nick : ((usuario.email || '').split('@')[0] || 'Sem nome');
   $('meu-nick').textContent = eu.nick;
   $('meu-av').textContent = iniciais(eu.nick);
   $('aj-nick').textContent = eu.nick;
@@ -410,14 +423,31 @@ function ouvirPedidos(){
   }, (e) => console.error(e)));
 
   // pedidos MEUS que foram aceitos: eu completo o meu lado da amizade
+  // (cada pedido uma vez só — o snapshot pode repetir o doc antes de o
+  // "concluido" chegar ao servidor)
+  const jaTratei = new Set();
   paradores.push(onSnapshot(query(collection(db, 'pedidos'), where('de', '==', eu.uid), where('estado', '==', 'aceito')), (snap) => {
     snap.docs.forEach(async (d) => {
+      if (jaTratei.has(d.id)) return;
+      jaTratei.add(d.id);
       const c = d.data();
       try{
         await setDoc(doc(db, 'usuarios', eu.uid, 'amigos', c.para), { nick: c.paraNick, desde: serverTimestamp() });
         await updateDoc(d.ref, { estado: 'concluido' });
         recado(c.paraNick + ' aceitou sua amizade!', 'bem');
         ponte.notificar('Bigas Voice', c.paraNick + ' aceitou sua amizade');
+      }catch(e){ console.error(e); jaTratei.delete(d.id); }
+    });
+  }, (e) => console.error(e)));
+
+  // alguém me TIROU da lista: tiro ele da minha também (a amizade acaba dos dois lados)
+  paradores.push(onSnapshot(query(collection(db, 'pedidos'), where('para', '==', eu.uid), where('estado', '==', 'desfeito')), (snap) => {
+    snap.docs.forEach(async (d) => {
+      if (jaTratei.has(d.id)) return;
+      jaTratei.add(d.id);
+      try{
+        await deleteDoc(doc(db, 'usuarios', eu.uid, 'amigos', d.data().de)).catch(() => {});
+        await updateDoc(d.ref, { estado: 'concluido' });
       }catch(e){ console.error(e); }
     });
   }, (e) => console.error(e)));
@@ -456,9 +486,11 @@ function pintarPedidos(){
 }
 
 async function tirarAmigo(uid, nick){
-  if (!confirm('Tirar ' + nick + ' da sua lista? Ele também vai deixar de te ver como amigo.')) return;
+  if (!confirm('Tirar ' + nick + ' da sua lista? A amizade acaba dos dois lados.')) return;
   try{
     await deleteDoc(doc(db, 'usuarios', eu.uid, 'amigos', uid));
+    // o lado dele só ele mesmo pode apagar — um recado "desfeito" pede isso
+    await addDoc(collection(db, 'pedidos'), { de: eu.uid, deNick: eu.nick, para: uid, paraNick: nick, estado: 'desfeito', quando: serverTimestamp() }).catch(() => {});
     if (chat.com === uid) fecharChat();
   }catch(e){ recado('Não consegui tirar agora.', 'mal'); }
 }
@@ -635,7 +667,11 @@ async function enviarMensagem(){
   $('chat-texto').value = ''; ajustarAltura();
   try{
     await addDoc(collection(db, 'conversas', idConversa(chat.com), 'mensagens'), { de: eu.uid, texto, quando: serverTimestamp() });
-  }catch(e){ console.error(e); recado('A mensagem não foi (' + (e.code || 'erro') + ').', 'mal'); $('chat-texto').value = texto; }
+  }catch(e){
+    console.error(e);
+    recado(e && e.code === 'permission-denied' ? 'Não dá pra mandar: vocês não são mais amigos (ou essa pessoa te bloqueou).' : 'A mensagem não foi (' + ((e && e.code) || 'erro') + ').', 'mal');
+    $('chat-texto').value = texto;
+  }
 }
 $('btn-enviar').onclick = enviarMensagem;
 $('chat-texto').addEventListener('keydown', (ev) => {
@@ -712,10 +748,19 @@ async function mandarConvite(amigoUid, amigoNick, link, principal){
       if (!d.exists() || call.conviteRef !== ref) return;
       const c = d.data();
       if (c.estado === 'aceita') {
-        clearTimeout(call.relogio); call.relogio = null; pararSom();
+        clearTimeout(call.relogio); pararSom();
         $('call-sub').textContent = amigoNick + ' atendeu — conectando…';
+        // atendeu mas não chegou: não fica esperando pra sempre
+        call.relogio = setTimeout(() => {
+          if (call.conviteRef !== ref || call.estado === 'conectada') return;
+          recado(amigoNick + ' atendeu, mas a conexão não fechou. Tenta de novo.', 'mal');
+          sairDaCall();
+        }, 60 * 1000);
       } else if (c.estado === 'recusada') {
         recado(amigoNick + ' recusou a chamada.', 'mal');
+        sairDaCall();
+      } else if (c.estado === 'falhou') {
+        recado(amigoNick + ' atendeu, mas não conseguiu entrar na chamada.', 'mal');
         sairDaCall();
       }
     });
@@ -741,6 +786,7 @@ function entrarEmEstado(estado, com, papel){
     call.mudo = false; call.surdo = false;
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
+    if (call.pararAceito) { call.pararAceito(); call.pararAceito = null; }
     call.conviteRef = null;
     pararSom();
   } else {
@@ -781,7 +827,10 @@ async function pararMeuConvite(ref){
   if (!ref) return;
   try{
     const atual = await getDoc(ref);
-    if (atual.exists() && atual.data().estado === 'chamando') await updateDoc(ref, { estado: 'encerrada' });
+    if (!atual.exists()) return;
+    const e = atual.data().estado;
+    if (e === 'chamando') await updateDoc(ref, { estado: 'encerrada' });       // ele nem viu: vira "perdida" lá
+    else if (e === 'aceita') await updateDoc(ref, { estado: 'desligada' });    // ele estava entrando: avisa que desliguei
   }catch{}
 }
 
@@ -850,12 +899,21 @@ function pintarConvite(){
 
   $('btn-atender').onclick = async () => {
     $('btn-atender').disabled = true; $('btn-recusar').disabled = true;
+    pararSom(); ponte.tocar(false);
     try{
-      await updateDoc(vivo.ref, { estado: 'aceita' });
+      // só aceita se AINDA está tocando: se quem chamou desistiu há 1 s, não
+      // sobrescreve o "não atendeu" nem joga você numa sala vazia
+      const aceitou = await runTransaction(db, async (tx) => {
+        const d = await tx.get(vivo.ref);
+        if (!d.exists() || d.data().estado !== 'chamando') return false;
+        tx.update(vivo.ref, { estado: 'aceita' });
+        return true;
+      });
+      if (!aceitou) { recado('Essa chamada já acabou.', 'mal'); convitesChegando = convitesChegando.filter((d) => d.id !== vivo.id); pintarConvite(); return; }
+      if (call.estado !== 'nenhuma' && c.link === call.link) { recado('Você já está nessa chamada.', ''); return; }
       // já estava numa call? ela dá lugar a esta (o app fecha a antiga
       // sem avisar 'encerrada' — a casa mesma faz a limpeza aqui)
       if (call.estado !== 'nenhuma') {
-        if (c.link === call.link) { recado('Você já está nessa chamada.', ''); return; }
         const antigo = call.conviteRef;
         entrarEmEstado('nenhuma');
         pararMeuConvite(antigo);
@@ -864,8 +922,17 @@ function pintarConvite(){
       call.link = c.link;
       $('conectando-txt').textContent = 'Entrando na chamada de ' + c.deNick + '…';
       mandarRectDoPalco();
+      // se quem chamou desligar enquanto eu entro, eu saio junto
+      call.pararAceito = onSnapshot(vivo.ref, (d) => {
+        if (!d.exists() || call.estado !== 'conectando') return;
+        if (d.data().estado === 'desligada') { recado(c.deNick + ' desligou.', 'mal'); sairDaCall(); }
+      });
       const ok = await ponte.entrarComLink(c.link, eu.nick, c.deNick);
-      if (!ok) { if (call.estado !== 'nenhuma') entrarEmEstado('nenhuma'); recado('Não consegui entrar na chamada.', 'mal'); }
+      if (!ok) {
+        if (call.estado !== 'nenhuma') entrarEmEstado('nenhuma');
+        recado('Não consegui entrar na chamada.', 'mal');
+        updateDoc(vivo.ref, { estado: 'falhou' }).catch(() => {}); // quem chamou fica sabendo
+      }
     }catch(e){
       console.error(e); recado('Não consegui atender: ' + traduzirErro(e), 'mal');
     }finally{ $('btn-atender').disabled = false; $('btn-recusar').disabled = false; }

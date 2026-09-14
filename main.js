@@ -589,16 +589,30 @@ function ligarSeletorDeTela(){
     }));
 
     let respondido = false;
+    const aoEscolher = (ev, id) => responder(id);
     const responder = (escolhaId) => {
       if(respondido) return;
       respondido = true;
+      // o ouvinte morre junto com o pedido: se ficasse vivo (fechou o seletor
+      // sem escolher), ele engoliria a escolha da PRÓXIMA transmissão e o
+      // seletor seguinte nunca responderia
+      ipcMain.removeListener('seletor-de-tela:escolheu', aoEscolher);
       const escolhida = fontes.find(f => f.id === escolhaId);
       if(!janelaSeletor.isDestroyed()) janelaSeletor.close();
-      if(!escolhida){ callback({}); return; }
-      callback({ video: escolhida, audio: 'loopback' });
+      // negar = callback sem nada. Com `{}` o Electron 44 lança "Video was
+      // requested, but no video stream was provided" e a promessa do site
+      // nunca resolve — o botão de compartilhar ficava travado até sair da call.
+      // E a resposta vai DEPOIS do evento: responder de dentro do 'closed' da
+      // janela (a pessoa fechou o seletor no X) derrubava o app inteiro.
+      setTimeout(() => {
+        try{
+          if(!escolhida){ callback(); return; }
+          callback({ video: escolhida, audio: 'loopback' });
+        }catch(e){ console.error('seletor de tela', e); try{ callback(); }catch{} }
+      }, 0);
     };
 
-    ipcMain.once('seletor-de-tela:escolheu', (ev, id) => responder(id));
+    ipcMain.on('seletor-de-tela:escolheu', aoEscolher);
     janelaSeletor.once('closed', () => responder(null));
 
     janelaSeletor.loadFile('seletor-de-tela.html');

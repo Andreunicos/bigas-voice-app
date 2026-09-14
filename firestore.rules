@@ -38,10 +38,12 @@ service cloud.firestore {
     }
 
     match /pedidos/{pedidoId} {
+      // 'pendente' = quero ser seu amigo; 'desfeito' = te tirei da lista
+      // (o outro lado apaga o dele ao receber)
       allow create: if logado()
         && request.resource.data.de == eu()
         && request.resource.data.para != eu()
-        && request.resource.data.estado == 'pendente'
+        && request.resource.data.estado in ['pendente', 'desfeito']
         && !meBloqueou(request.resource.data.para);
       allow read, update: if logado()
         && (resource.data.de == eu() || resource.data.para == eu());
@@ -59,9 +61,16 @@ service cloud.firestore {
     }
 
     match /conversas/{conversaId}/mensagens/{mensagemId} {
+      // o "outro" da conversa é o pedaço do id que não sou eu
+      function outroDa(id) {
+        return id.split('_')[0] == eu() ? id.split('_')[1] : id.split('_')[0];
+      }
       allow read: if logado() && conversaId.split('_').hasAny([eu()]);
+      // só escreve quem é amigo aceito do outro e não foi bloqueado por ele
       allow create: if logado()
         && conversaId.split('_').hasAny([eu()])
+        && souAmigoDe(outroDa(conversaId))
+        && !meBloqueou(outroDa(conversaId))
         && request.resource.data.de == eu()
         && request.resource.data.texto is string
         && request.resource.data.texto.size() > 0

@@ -68,7 +68,7 @@ process.on('unhandledRejection', (e) => console.log('REJEICAO', (e && e.stack) |
 process.on('uncaughtException', (e) => console.log('EXCECAO', (e && e.stack) || e));
 
 const resultados = [];
-function ok(nome, cond, extra) { resultados.push((cond ? 'OK   ' : 'FALHA') + ' ' + nome + (extra ? '  → ' + extra : '')); }
+function ok(nome, cond, extra) { const l = (cond ? 'OK   ' : 'FALHA') + ' ' + nome + (extra ? '  → ' + extra : ''); resultados.push(l); console.log('  ' + l); }
 const espera = (ms) => new Promise((r) => setTimeout(r, ms));
 async function esperarAte(fn, ms, passo) {
   const fim = Date.now() + ms;
@@ -176,6 +176,22 @@ app.whenReady().then(async () => {
       })()`, true);
     let cj = null; try { cj = JSON.parse(cap); } catch {}
     ok('captura de tela no app sai com o som próprio EXCLUÍDO (restrictOwnAudio)', !!(cj && cj.temAudio && cj.restrict === true), cap);
+
+    // SELETOR CANCELADO e depois usado de novo: o ouvinte do pedido antigo
+    // não pode engolir a escolha do pedido novo (era um bug real)
+    const janelasAntes = electron.BaseWindow.getAllWindows().length;
+    const cancelado = view.webContents.executeJavaScript(`
+      navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(s => { s.getTracks().forEach(t => t.stop()); return 'ABRIU'; }, e => e.name)`, true);
+    const seletor = await esperarAte(() => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar/.test(w.getTitle())) || null, 6000, 150);
+    ok('seletor de tela abriu (invisível)', !!seletor);
+    if (seletor) seletor.close();
+    ok('cancelar o seletor recusa a captura (erro, não trava)', /NotAllowedError|AbortError/.test(String(await cancelado)), String(await cancelado));
+    setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id), 1500);
+    const denovo = await Promise.race([
+      view.webContents.executeJavaScript(`navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(s => { s.getTracks().forEach(t => t.stop()); return 'ABRIU'; }, e => e.name)`, true),
+      espera(9000).then(() => 'TRAVOU'),
+    ]);
+    ok('transmitir de novo depois de cancelar FUNCIONA (sem ouvinte vazado)', denovo === 'ABRIU', denovo);
 
     // a lateral (chat/ajustes) abre → o palco encolhe → a view acompanha
     await js('document.getElementById("btn-ajustes").click(); true');
