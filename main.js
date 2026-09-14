@@ -53,6 +53,7 @@ let config = {
   codec: 'auto',
   somDaTela: true,
   captura: 'dxgi',      // 'dxgi' (padrão do Chromium) | 'wgc' (Windows Graphics Capture) — vale ao reabrir
+  prioridadeCaptura: false, // processos de captura/GPU do app um degrau acima do normal durante a call
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
@@ -271,6 +272,7 @@ async function encerrarCall(motivo){
   try { if (janelaPrincipal && !janelaPrincipal.isDestroyed()) janelaPrincipal.contentView.removeChildView(v); } catch {}
   try { v.webContents.close(); } catch {}
   if (motivo !== 'trocou') desligarVigiaGpu();
+  priorizarCaptura(false);
   // "trocou" = já vem outra call no lugar; a casa mesma cuidou da anterior
   if (motivo !== 'trocou') avisarHome('call:estado', { estado: 'encerrada', motivo: motivo || '' });
 }
@@ -400,6 +402,19 @@ function vestirSite(wc){
         new MutationObserver(ver).observe(ch, { attributes: true, attributeFilter: ['hidden'] });
         ver();
       }
+      // enquanto transmite, conta pro app quantos quadros a captura entrega
+      // (mediana que o próprio site mede) — o app cruza com a placa de vídeo
+      setInterval(function(){
+        try {
+          if (typeof est === 'undefined' || !est.streamTela) { window.bigasApp.avisar('fonte:-'); return; }
+          var H = est.histFonte || [];
+          if (H.length < 8) { window.bigasApp.avisar('fonte:?'); return; }
+          var o = H.slice(-10).sort(function(a, b){ return a - b; });
+          var alvo = (est.streamTela.getVideoTracks()[0] || {}).getSettings ? (est.streamTela.getVideoTracks()[0].getSettings().frameRate || 0) : 0;
+          window.bigasApp.avisar('fonte:' + o[Math.floor(o.length / 2)] + '/' + Math.round(alvo));
+        } catch(e){}
+      }, 5000);
+
       var bm = document.getElementById('btn-mic'), bs = document.getElementById('btn-surdo');
       var espelhar = function(){
         window.bigasApp.avisar('controles:' + (bm && bm.classList.contains('on') ? 1 : 0) + (bs && bs.classList.contains('on') ? 1 : 0));
@@ -508,6 +523,23 @@ function aplicarNaTransmissao(qualidade, som){
  * por call quando ela passa de 90% enquanto a pessoa transmite.
  * ------------------------------------------------------------------ */
 let vigiaGpu = null;
+let gpuAgora = null;          // último uso da placa medido (0–100)
+let diag = { presos: 0, avisouExclusivo: false, avisouPlaca: false };
+
+/* cruza "quantos quadros a captura entrega" com "quanto a placa está
+   ocupada": placa folgada + captura presa em poucos quadros = jogo em tela
+   cheia EXCLUSIVA (passa por fora do compositor). Avisa uma vez por call. */
+function diagnosticarCaptura(txt){
+  if (txt === '-') { diag.presos = 0; return; }   // não está transmitindo
+  const [f, alvo] = txt.split('/').map(Number);
+  if (!Number.isFinite(f) || !Number.isFinite(alvo) || alvo < 20) return;
+  const presa = f < Math.min(15, alvo * 0.35);
+  diag.presos = presa ? diag.presos + 1 : 0;
+  if (diag.presos >= 3 && !diag.avisouExclusivo && gpuAgora !== null && gpuAgora < 70) {
+    diag.avisouExclusivo = true;
+    avisarHome('call:gpu', { gpu: gpuAgora, exclusivo: true, fonte: f });
+  }
+}
 function ligarVigiaGpu(){
   if (vigiaGpu || process.platform !== 'win32') return;
   const { spawn } = require('child_process');
@@ -522,17 +554,46 @@ function ligarVigiaGpu(){
     for (const l of linhas) {
       const v = parseInt(l, 10);
       if (!Number.isFinite(v)) continue;
-      avisarHome('call:gpu', { gpu: Math.min(100, v) });
+      gpuAgora = Math.min(100, v);
+      avisarHome('call:gpu', { gpu: gpuAgora });
       seguidas = v >= 90 ? seguidas + 1 : 0;
-      if (seguidas >= 2 && !avisou) { avisou = true; avisarHome('call:gpu', { gpu: Math.min(100, v), aviso: true }); }
+      if (seguidas >= 2 && !avisou) { avisou = true; avisarHome('call:gpu', { gpu: gpuAgora, aviso: true }); }
     }
   });
   vigiaGpu.on('exit', () => { vigiaGpu = null; });
 }
 function desligarVigiaGpu(){
+  gpuAgora = null; diag = { presos: 0, avisouExclusivo: false, avisouPlaca: false };
   if (!vigiaGpu) return;
   try { vigiaGpu.kill(); } catch {}
   vigiaGpu = null;
+}
+
+/* ---------------------------------------------------------------------
+ * PRIORIDADE DOS PROCESSOS DE CAPTURA (durante a call)
+ * ---------------------------------------------------------------------
+ * Quando o jogo também come processador, a captura perde a vez na fila.
+ * Sobe pra "acima do normal" os processos do app que carregam a
+ * transmissão (GPU, captura de vídeo, a página da call) enquanto a call
+ * existe, e devolve pro normal ao sair. Sem admin; só nos nossos processos.
+ * ------------------------------------------------------------------ */
+const os = require('os');
+let pidsPriorizados = [];
+function priorizarCaptura(ligar){
+  if (process.platform !== 'win32') return;
+  if (!ligar) {
+    for (const pid of pidsPriorizados) { try { os.setPriority(pid, os.constants.priority.PRIORITY_NORMAL); } catch {} }
+    pidsPriorizados = [];
+    return;
+  }
+  if (!config.prioridadeCaptura) return;
+  try{
+    for (const m of app.getAppMetrics()) {
+      const alvo = m.type === 'GPU' || (m.type === 'Utility' && /Video Capture|Audio/i.test(m.name || '')) || m.type === 'Tab';
+      if (!alvo) continue;
+      try { os.setPriority(m.pid, os.constants.priority.PRIORITY_ABOVE_NORMAL); pidsPriorizados.push(m.pid); } catch {}
+    }
+  }catch(e){ console.warn('prioridade', e); }
 }
 
 /* dentro da view: clica no botão do site de criar sala e espera o link */
@@ -613,7 +674,8 @@ function ligarChamadas(){
   ipcMain.on('call:aviso', (ev, o) => {
     if (!viewCall || ev.sender !== viewCall.webContents) return;
     o = String(o || '');
-    if (o === 'conectada') avisarHome('call:estado', { estado: 'conectada' });
+    if (o === 'conectada') { avisarHome('call:estado', { estado: 'conectada' }); setTimeout(() => priorizarCaptura(true), 1500); }
+    else if (o.startsWith('fonte:')) diagnosticarCaptura(o.slice(6));
     else if (o.startsWith('controles:')) avisarHome('call:controles', { mudo: o[10] === '1', surdo: o[11] === '1' });
   });
 
@@ -668,7 +730,7 @@ function ligarChamadas(){
   ipcMain.handle('config:ler', () => config);
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
-      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura'];
+      'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();

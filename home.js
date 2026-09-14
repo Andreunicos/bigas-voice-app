@@ -856,6 +856,10 @@ ponte.aoMedirPlaca((d) => {
     recado('Sua placa de vídeo está a ' + d.gpu + '%. Limita o FPS do jogo (60 num monitor de 60 Hz) — a transmissão entrega o dobro de quadros com folga.', 'mal');
     ponte.notificar('Bigas Voice', 'Placa a ' + d.gpu + '%: limita o FPS do jogo pra transmitir liso');
   }
+  if (d.exclusivo) {
+    recado('A captura está presa em ' + d.fonte + ' quadros com a placa folgada (' + d.gpu + '%): o jogo está em TELA CHEIA EXCLUSIVA. Põe em "janela sem borda" nas opções do jogo.', 'mal');
+    ponte.notificar('Bigas Voice', 'Jogo em tela cheia exclusiva: muda pra janela sem borda pra transmissão andar');
+  }
 });
 
 // o processo principal conta o que aconteceu com a call de verdade
