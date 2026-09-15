@@ -898,6 +898,7 @@ function ligarSomDoApp(pid){
     if (viewCall !== v || !somDoApp || somDoApp.proc !== proc) return;
     // manda só amostras inteiras (8 bytes = um par esquerda/direita)
     let todo = sobra.length ? Buffer.concat([sobra, b]) : b;
+    if (todo.length < 7680) { sobra = todo; return; }   // junta pelo menos 20 ms por mensagem
     const corte = todo.length - (todo.length % 8);
     sobra = todo.subarray(corte);
     if (!corte) return;
@@ -927,7 +928,9 @@ const SCRIPT_SOM_DO_APP = `
         if (window.__bigasSomDoApp) return;
         var CODIGO_FILA = ${JSON.stringify(`
           class Fila extends AudioWorkletProcessor {
-            constructor(){ super(); this.cap = 48000 * 2; this.buf = new Float32Array(this.cap); this.ini = 0; this.n = 0; this.pronto = false;
+            // fila com folga: alvo de 150 ms, corta só acima de 600 ms. O PCM chega pela
+            // página (que às vezes engasga 50–100 ms); com 40 ms de fila o som picotava.
+            constructor(){ super(); this.cap = 48000 * 2 * 2; this.ALVO = 48000 * 2 * 0.15; this.MAX = 48000 * 2 * 0.6; this.buf = new Float32Array(this.cap); this.ini = 0; this.n = 0; this.pronto = false;
               this.port.onmessage = (e) => this.encher(e.data); }
             encher(f){
               if (this.n + f.length > this.cap) { var sobra = this.n + f.length - this.cap; this.ini = (this.ini + sobra) % this.cap; this.n -= sobra; }
@@ -939,9 +942,9 @@ const SCRIPT_SOM_DO_APP = `
             }
             process(inputs, outputs){
               var o = outputs[0], L = o[0], R = o[1] || o[0], cap = this.cap;
-              // atrasou demais (acima de 120 ms): pula pra 40 ms — o som do jogo tem que andar junto com a imagem
-              if (this.n > 48000 * 2 * 0.12) { var alvo = 48000 * 2 * 0.04; this.ini = (this.ini + (this.n - alvo)) % cap; this.n = alvo; }
-              if (!this.pronto && this.n >= 48000 * 2 * 0.04) this.pronto = true;
+              // atrasou demais: pula pro alvo — o som do jogo tem que andar perto da imagem
+              if (this.n > this.MAX) { this.ini = (this.ini + (this.n - this.ALVO)) % cap; this.n = this.ALVO; }
+              if (!this.pronto && this.n >= this.ALVO) this.pronto = true;
               for (var i = 0; i < L.length; i++) {
                 if (this.pronto && this.n >= 2) { L[i] = this.buf[this.ini]; R[i] = this.buf[(this.ini + 1) % cap]; this.ini = (this.ini + 2) % cap; this.n -= 2; }
                 else { L[i] = 0; R[i] = 0; if (this.n < 2) this.pronto = false; }
