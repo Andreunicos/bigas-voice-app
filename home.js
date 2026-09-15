@@ -1665,7 +1665,7 @@ async function mudarConfig(mudancas){
   try { config = await ponte.configMudar(mudancas); } catch (e) { recado('Não consegui salvar o ajuste.', 'mal'); }
   pintarAjustes();
   // já numa call: vale agora, sem reiniciar nada
-  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'prioridadeGpu', 'nitidezExtra', 'ruidoForte'].some((k) => k in mudancas)) ponte.reaplicar();
+  if (call.estado !== 'nenhuma' && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'prioridadeGpu', 'nitidezExtra', 'ruidoForte', 'portao', 'portaoCorta'].some((k) => k in mudancas)) ponte.reaplicar();
 }
 
 function bonitinho(combo){ return String(combo || '—').replace('Control', 'Ctrl').replace(/\+/g, ' + '); }
@@ -1678,6 +1678,9 @@ function pintarAjustes(){
   $('chave-gpu').classList.toggle('on', config.prioridadeGpu !== false);
   $('chave-nitidez').classList.toggle('on', !!config.nitidezExtra);
   $('chave-ruido').classList.toggle('on', !!config.ruidoForte);
+  const portao = Math.max(5, Math.min(50, Number(config.portao) || 12));
+  $('portao-app').value = portao; $('portao-app-txt').textContent = String(portao); $('marca-portao').style.left = portao + '%';
+  $('chave-portao').classList.toggle('on', config.portaoCorta !== false);
   $('chave-sobrepor').classList.toggle('on', config.sobrepor !== false);
   $('linha-canto').style.display = config.sobrepor !== false ? '' : 'none';
   $('sel-canto').value = config.cantoSobreposicao || 'esq-cima';
@@ -1747,8 +1750,10 @@ async function ligarMedidor(reiniciar){
       an.getFloatTimeDomainData(buf);
       let soma = 0; for (let i = 0; i < buf.length; i++) soma += buf[i] * buf[i];
       const rms = Math.sqrt(soma / buf.length);
-      const pct = Math.min(100, Math.round(Math.sqrt(rms) * 140));
+      // a MESMA régua do site (nivel()): assim o ponto de corte daqui vale igual lá dentro
+      const pct = Math.min(100, Math.round(Math.sqrt(rms) * 145));
       $('nivel-mic').style.width = pct + '%';
+      $('nivel-mic').classList.toggle('passa', pct > (Number(config.portao) || 12));
       medidor.quadro = requestAnimationFrame(passo);
     };
     passo();
@@ -1794,6 +1799,9 @@ $('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela ==
 $('chave-gpu').onclick = () => mudarConfig({ prioridadeGpu: config.prioridadeGpu === false });
 $('chave-nitidez').onclick = () => mudarConfig({ nitidezExtra: !config.nitidezExtra });
 $('chave-ruido').onclick = () => mudarConfig({ ruidoForte: !config.ruidoForte });
+$('chave-portao').onclick = () => mudarConfig({ portaoCorta: config.portaoCorta === false });
+$('portao-app').oninput = () => { const v = Number($('portao-app').value); $('portao-app-txt').textContent = String(v); $('marca-portao').style.left = v + '%'; config.portao = v; };
+$('portao-app').onchange = () => mudarConfig({ portao: Number($('portao-app').value) });
 $('chave-sobrepor').onclick = () => mudarConfig({ sobrepor: config.sobrepor === false });
 $('sel-canto').onchange = () => mudarConfig({ cantoSobreposicao: $('sel-canto').value });
 $('chave-jogo').onclick = () => mudarConfig({ mostrarJogo: config.mostrarJogo === false });

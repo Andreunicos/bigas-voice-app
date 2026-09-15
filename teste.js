@@ -342,6 +342,16 @@ app.whenReady().then(async () => {
       const rede = await esperarAte(() => js('(function(){ var c = window.__bigasEstado.call; return typeof c.ping === "number" && c.religando === false ? "ok" : null; })()'), 6000, 300);
       ok('painel da call recebe ping/estado da rede', rede === 'ok');
     }
+    // SENSIBILIDADE: o ponto de corte do app vale no site, e abaixo dele o microfone FECHA de verdade
+    {
+      await js('window.bigasHome.configMudar({ portao: 23, portaoCorta: true })');
+      const cfgSite = await esperarAte(() => view.webContents.executeJavaScript(`(cfg.portao === 23 && cfg.portaoCorta === true) ? 'ok' : null`), 6000, 300);
+      ok('sensibilidade: o ponto de corte (23) e a chave "cortar" chegam no site', cfgSite === 'ok');
+      const portao = await view.webContents.executeJavaScript(`(function(){ var t = est.streamMic.getAudioTracks()[0]; cfg.fala = 'voz'; est.mudo = false; est.portaoAberto = false; aplicarMudo(); var fechado = t.enabled; est.portaoAberto = true; aplicarMudo(); var aberto = t.enabled; est.portaoAberto = undefined; return JSON.stringify({ fechado: fechado, aberto: aberto }); })()`);
+      ok('sensibilidade: abaixo do ponto a faixa do mic desliga; acima liga', portao === '{"fechado":false,"aberto":true}', portao);
+      await js('window.bigasHome.configMudar({ portao: 12 })');
+    }
+
     // RUÍDO FORTE (RNNoise): o microfone do site passa pelo worklet; desligar volta pro mic direto
     {
       const antes = await view.webContents.executeJavaScript(`JSON.stringify({ rn: !!(window.__bigasRnnoise && window.__bigasRnnoise.ativo), pronto: !!(window.__bigasRnnoise && window.__bigasRnnoise.pronto), label: est.streamMic ? est.streamMic.getAudioTracks()[0].label : null })`);

@@ -382,7 +382,9 @@
   .tecla{ background:var(--sup3); border:1px solid var(--linha2); padding:7px 12px; border-radius:8px; font:600 12.5px ui-monospace,Consolas,monospace; color:var(--txt); min-width:130px; text-align:center }
   .tecla.gravando{ border-color:var(--azul2); color:var(--azul2) }
   .medidor{ height:10px; border-radius:5px; background:var(--sup3); overflow:hidden; position:relative }
-  .medidor .nivel{ height:100%; width:0; background:linear-gradient(90deg, var(--verde), var(--amarelo) 70%, var(--vermelho)); transition:width .06s linear }
+  .medidor .nivel{ height:100%; width:0; background:var(--txt3); transition:width .06s linear }
+  .medidor .nivel.passa{ background:var(--verde) }
+  .medidor .marca{ position:absolute; top:-3px; bottom:-3px; width:2px; background:#fff; opacity:.9; pointer-events:none; transition:left .1s linear }
   .cartoes{ display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:8px }
   .cartao{ text-align:left; padding:11px 13px; border-radius:12px; background:var(--sup2); border:2px solid transparent; display:flex; flex-direction:column; gap:3px }
   .cartao:hover{ background:var(--sup3) }
@@ -615,9 +617,15 @@
         <div class="bloco">
           <h3>Microfone</h3>
           <select id="sel-mic-app"><option value="">Padrão do Windows</option></select>
-          <div class="medidor"><div class="nivel" id="nivel-mic"></div></div>
+          <div class="medidor"><div class="nivel" id="nivel-mic"></div><div class="marca" id="marca-portao"></div></div>
           <small style="color:var(--txt3)">Fala alguma coisa: a barra tem que mexer. Se não mexer, é outro microfone.</small>
           <p class="aviso-perm" id="aviso-mic" hidden></p>
+        </div>
+        <div class="bloco">
+          <h3>Sensibilidade</h3>
+          <div class="faixa"><input type="range" id="portao-app" min="5" max="50" step="1" value="12"><b id="portao-app-txt">12</b></div>
+          <small style="color:var(--txt3)">O risquinho na barra é o ponto de corte. Fica <b>calado</b> com teclado, ventilador e jogo ligados: se a barra passar do risquinho sozinha, arrasta pra <b>direita</b> até parar. Pra esquerda pega voz mais baixa (e mais ruído).</small>
+          <div class="ajuste"><div class="txt"><b>Cortar o microfone abaixo do ponto</b><small>Como a sensibilidade do Discord: abaixo do ponto nada sai — nem teclado, nem respiração. Desligado, o ponto só acende o "está falando".</small></div><button class="chave on" id="chave-portao" type="button" aria-label="Cortar abaixo do ponto"></button></div>
         </div>
         <div class="bloco">
           <h3>Como você fala</h3>

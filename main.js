@@ -69,6 +69,8 @@ let config = {
   fala: 'voz',          // 'voz' (aberto) | 'ptt' (segurar pra falar)
   teclaPtt: 'KeyV', nomeTeclaPtt: 'V',
   limpar: true,         // cancelamento de eco / ruído no mic
+  portao: 12,           // sensibilidade: a partir de que nível (5–50) conta como fala
+  portaoCorta: true,    // abaixo do ponto o microfone FECHA (como no Discord); desligado só marca "falando"
   volume: 100,          // volume geral dos amigos (0–200)
   qualidade: '1080-60-8', // perfil da transmissão (chaves do site). 'auto' mede a máquina e, com jogo aberto, escolhe 720p — no app o padrão é 1080p60
   codec: 'auto',
@@ -558,6 +560,7 @@ function scriptPreferencias(){
     limpar: !!config.limpar, volume: config.volume, qualidade: config.qualidade,
     codec: config.codec, micRotulo: config.micRotulo, saidaRotulo: config.saidaRotulo,
     nitidezExtra: !!config.nitidezExtra, ruidoForte: !!config.ruidoForte,
+    portao: Math.max(5, Math.min(50, Number(config.portao) || 12)), portaoCorta: config.portaoCorta !== false,
   });
   return `
     (function(){
@@ -567,6 +570,10 @@ function scriptPreferencias(){
           cfg.fala = pref.fala === 'ptt' ? 'ptt' : 'voz';
           if (pref.tecla) { cfg.tecla = pref.tecla; cfg.nomeTecla = pref.nomeTecla || pref.tecla; }
           cfg.limpar = pref.limpar;
+          cfg.portao = pref.portao; cfg.portaoCorta = pref.portaoCorta;
+          var ip = document.getElementById('in-portao'); if (ip) { ip.value = cfg.portao; ip.dispatchEvent(new Event('input', { bubbles: true })); }
+          var ic = document.getElementById('in-portao-corta'); if (ic) ic.checked = cfg.portaoCorta;
+          if (typeof aplicarMudo === 'function') try { aplicarMudo(); } catch(e){}
           cfg.volume = Math.max(0, Math.min(200, Number(pref.volume) || 100));
           cfg.qualidade = pref.qualidade || 'auto';
           cfg.codec = pref.codec || 'auto';
@@ -1424,13 +1431,13 @@ function ligarChamadas(){
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
       'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu', 'nitidezExtra',
-      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo'];
+      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo', 'portao', 'portaoCorta'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
     if (mudancas && ('fala' in mudancas || 'teclaPtt' in mudancas)) ligarPtt();
     // mudou algo que vale dentro da call: aplica agora (a casa também pede, mas o script é idempotente)
-    if (viewCall && mudancas && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'nitidezExtra', 'ruidoForte', 'prioridadeGpu'].some((k) => k in mudancas)) reaplicarNaCall();
+    if (viewCall && mudancas && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'nitidezExtra', 'ruidoForte', 'prioridadeGpu', 'portao', 'portaoCorta'].some((k) => k in mudancas)) reaplicarNaCall();
     if (mudancas && ('sobrepor' in mudancas || 'cantoSobreposicao' in mudancas)) { posicionarSobreposicao(); atualizarSobreposicao(); }
     if (mudancas && 'mostrarJogo' in mudancas) olharJogo().catch(() => {});
     return config;
