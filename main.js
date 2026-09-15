@@ -70,7 +70,7 @@ let config = {
   teclaPtt: 'KeyV', nomeTeclaPtt: 'V',
   limpar: true,         // cancelamento de eco / ruído no mic
   volume: 100,          // volume geral dos amigos (0–200)
-  qualidade: 'auto',    // perfil da transmissão (chaves do site: auto, 1080-60-8…)
+  qualidade: '1080-60-8', // perfil da transmissão (chaves do site). 'auto' mede a máquina e, com jogo aberto, escolhe 720p — no app o padrão é 1080p60
   codec: 'auto',
   somDaTela: true,
   captura: 'dxgi',      // 'dxgi' (padrão do Chromium) | 'wgc' (Windows Graphics Capture) — vale ao reabrir
@@ -84,6 +84,8 @@ let config = {
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
+  // quem instalou antes ficou com 'auto' guardado (que, com jogo aberto, escolhe 720p): passa pra 1080p60 uma vez
+  if (config.qualidade === 'auto' && !config.migrouQualidade) { config.qualidade = '1080-60-8'; config.migrouQualidade = true; guardarConfig(); }
 }
 function guardarConfig(){
   try { fs.writeFileSync(ARQ_CONFIG(), JSON.stringify(config, null, 2)); } catch (e) { console.error('config', e); }
@@ -425,6 +427,25 @@ function vestirSite(wc){
         var ACnovo = function(o){ var c = new AC(o); try { if (window.__bigasSaida && c.setSinkId) c.setSinkId(window.__bigasSaida).catch(function(){}); } catch(e){} return c; };
         ACnovo.prototype = AC.prototype;
         window.AudioContext = ACnovo;
+      } catch(e){}
+
+      // QUEM ASSISTE PEDE A RESOLUÇÃO CHEIA. O site pede ao amigo uma imagem
+      // do tamanho da janela onde o vídeo está — e no app o palco tem ~900 px,
+      // então o amigo mandava 960x540 mesmo transmitindo em 1080p (medido:
+      // "janela dele (1280px) 1.5x"). Aqui você pode dar tela cheia a qualquer
+      // momento, então o app pede sempre o tamanho do MONITOR.
+      try {
+        var avisarOriginal = window.avisarTamanho;
+        if (typeof avisarOriginal === 'function') {
+          window.avisarTamanho = function(par){
+            if (!par || typeof canalDe !== 'function' || !canalDe(par)) return;
+            var l = Math.round((screen.width || 1920) * (window.devicePixelRatio || 1));
+            var degrau = l <= 1400 ? 1280 : l <= 1700 ? 1600 : l <= 2000 ? 1920 : l <= 2800 ? 2560 : 3840;
+            if (par.avisei === degrau) return;
+            par.avisei = degrau;
+            enviar(par, { t: 'quero', v: degrau });
+          };
+        }
       } catch(e){}
 
       // as preferências do app (voz, mic, saída, volume, qualidade…) valem aqui

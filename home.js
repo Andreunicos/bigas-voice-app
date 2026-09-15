@@ -1624,8 +1624,8 @@ window.addEventListener('resize', mandarRectDoPalco);
  * isto está aberto, mas continua rodando; volta ao fechar.
  * =================================================================== */
 const QUALIDADES = [
-  { id: 'auto',       titulo: 'Automático',     sub: 'Mede sua máquina e escolhe. Recomendado.' },
-  { id: '1080-60-8',  titulo: '1080p · 60 fps', sub: 'Jogo rápido, monitor 1080p. ~8 Mbps.' },
+  { id: 'auto',       titulo: 'Automático',     sub: 'Mede sua máquina e escolhe — com jogo aberto costuma cair pra 720p.' },
+  { id: '1080-60-8',  titulo: '1080p · 60 fps', sub: 'Jogo rápido, monitor 1080p. ~8 Mbps. Recomendado.' },
   { id: '1080-30-5',  titulo: '1080p · 30 fps', sub: 'Nítido, gasta menos. ~5 Mbps.' },
   { id: '1440-60-14', titulo: '1440p · 60 fps', sub: 'Só com placa e internet fortes. ~14 Mbps.' },
   { id: '720-30-3',   titulo: '720p · 30 fps',  sub: 'Internet fraca. ~3 Mbps.' },

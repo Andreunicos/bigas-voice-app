@@ -325,6 +325,12 @@ app.whenReady().then(async () => {
       } else ok('ajudante gpuprio.exe presente (compilar em nativo/)', false, 'faltando');
     }
 
+    // RESOLUÇÃO CHEIA: quem assiste no app pede o tamanho do MONITOR, não do palco (senão o amigo mandava 960x540)
+    {
+      await view.webContents.executeJavaScript(`avisarTamanhos(); true`).catch(() => {});
+      const pediu = await esperarAte(() => amigo.webContents.executeJavaScript(`(function(){ var p = [...pares.values()][0]; return p && p.larguraQueQuer >= 1280 ? p.larguraQueQuer : null; })()`), 8000, 300);
+      ok('quem assiste no app pede a resolução do monitor inteiro (não do palco)', pediu >= 1280, String(pediu));
+    }
     // SOBREPOSIÇÃO: a view conta quem está na call (eu + amigo) — a casa e a janelinha recebem
     {
       const gente = await esperarAte(() => js('(function(){ var g = window.__bigasEstado.call.gente; return g && g.length === 2 ? JSON.stringify(g) : null; })()'), 6000, 300);
@@ -612,8 +618,9 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
       ok('GRUPOS: A entra no canal de voz e fica "conectado" mesmo sozinho', !!noCanal, noCanal);
       const dentroB = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais .dentro'); return d && /teste_bigas_a/.test(d.textContent) ? d.textContent : null; })()`), 15000, 400);
       ok('GRUPOS: B vê A dentro do canal de voz', !!dentroB, dentroB);
-      const estadoView = janelaA.contentView.children[0] ? await janelaA.contentView.children[0].webContents.executeJavaScript(`document.getElementById('sala-txt').textContent`).catch(() => '') : 'sem view';
-      ok('GRUPOS: o texto do site dentro do canal fala em canal, não em "chamando"', /canal/.test(estadoView) && !/chamando/.test(estadoView), estadoView);
+      // (no canal a tela da call abre na hora; o texto de entrada só importa enquanto ela não abriu)
+      const estadoView = janelaA.contentView.children[0] ? await janelaA.contentView.children[0].webContents.executeJavaScript(`document.getElementById('entrada').hidden ? 'tela da call aberta' : document.getElementById('sala-txt').textContent`).catch(() => '') : 'sem view';
+      ok('GRUPOS: dentro do canal nada fala em "chamando" (tela da call aberta ou texto de canal)', estadoView === 'tela da call aberta' || (/canal/.test(estadoView) && !/chamando/.test(estadoView)), estadoView);
       // sozinho no canal a tela da call já aparece, com o botão de transmitir liberado
       const sozinho = janelaA.contentView.children[0] ? await esperarAte(() => janelaA.contentView.children[0].webContents.executeJavaScript(`(function(){ var b = document.getElementById('btn-tela'); return !document.getElementById('chamada').hidden && b && !b.disabled ? 'ok' : null; })()`).catch(() => null), 8000, 300) : null;
       ok('GRUPOS: sozinho no canal já dá pra transmitir a tela (botão liberado)', sozinho === 'ok');
