@@ -40,7 +40,7 @@ if (!process.versions.electron) {
   // BIGAS_INVISIVEL: o app não mostra sobreposição, notificação, Explorer, nem mexe na área de transferência
   const env = Object.assign({}, process.env, { BIGAS_APP_DIR: raiz, BIGAS_INVISIVEL: '1' });
   delete env.ELECTRON_RUN_AS_NODE; // se vier ligado do terminal, o Electron vira Node puro e nada funciona
-  const r = spawnSync(exe, [pasta], { env, stdio: 'inherit', timeout: 240000 });
+  const r = spawnSync(exe, [pasta], { env, stdio: 'inherit', timeout: 600000 });
   process.exit(r.status == null ? 1 : r.status);
 }
 
@@ -465,6 +465,8 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
   const NICK_A = 'teste_bigas_a', NICK_B = 'teste_bigas_b';
   const janelaB = new RealBW({ show: false, width: 1280, height: 820, webPreferences: { contextIsolation: true, sandbox: true, partition: 'teste-b', preload: path.join(APP_DIR, 'preload.js') } });
   janelaB.webContents.setAudioMuted(true);
+  const errosB = [];
+  janelaB.webContents.on('console-message', (ev, nivel, msg) => { if (nivel >= 2) errosB.push(msg); });
   await janelaB.loadFile(path.join(APP_DIR, 'home.html'));
   const jsB = (c) => janelaB.webContents.executeJavaScript(c);
   await esperarAte(() => jsB('!!window.__bigasEstado'), 8000);
@@ -491,12 +493,16 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
   await esperarAte(async () => (!(await temAmigo(jsA, uidB)) && !(await temAmigo(jsB, uidA))) ? 'ok' : null, 15000, 500);
   if (await temAmigo(jsB, uidA)) { await jsB(`window.__bigasEstado.tirarAmigo(${JSON.stringify(uidA)}, ${JSON.stringify(NICK_A)})`); await esperarAte(async () => !(await temAmigo(jsB, uidA)) ? 'ok' : null, 10000, 500); }
 
+  // pedidos pendentes de uma rodada anterior: B recusa todos antes de começar
+  await jsB(`document.querySelectorAll('#pedidos .cartinha .nao').forEach(b => b.click()); true`);
+  await esperarAte(() => jsB(`document.getElementById('bloco-pedidos').hidden ? 'ok' : null`), 8000, 300);
+
   // pedido de amizade A → B, B aceita, os dois lados ficam amigos
   await jsA(`document.getElementById('add-nick').value = ${JSON.stringify(NICK_B)}; document.getElementById('btn-add').click(); true`);
   const aviso = await esperarAte(() => jsA(`document.getElementById('erro-add').textContent || null`), 10000, 300);
   ok('FIREBASE: pedido de amizade enviado', /enviado|já tinha/i.test(String(aviso)), aviso);
   const pedidoB = await esperarAte(() => jsB(`(function(){ var b = document.querySelector('#pedidos .cartinha b'); return b && b.textContent === ${JSON.stringify(NICK_A)} ? 'ok' : null; })()`), 15000, 300);
-  ok('FIREBASE: B recebeu o pedido em tempo real', pedidoB === 'ok');
+  ok('FIREBASE: B recebeu o pedido em tempo real', pedidoB === 'ok', pedidoB === 'ok' ? '' : 'erros de B: ' + errosB.join(' | ').slice(0, 300) + ' | pedidos no DOM: ' + (await jsB(`document.getElementById('pedidos').innerHTML.slice(0, 200)`)) + ' | bloco: ' + (await jsB(`document.getElementById('bloco-pedidos').hidden`)));
   await jsB(`var s = document.querySelector('#pedidos .cartinha .sim'); if (s) s.click(); true`);
   const amigosOk = await esperarAte(async () => ((await temAmigo(jsA, uidB)) && (await temAmigo(jsB, uidA))) ? 'ok' : null, 20000, 500);
   ok('FIREBASE: amizade mútua (A tem B, B tem A) depois do aceite', amigosOk === 'ok');
@@ -559,6 +565,68 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
     const parou = await esperarAte(() => jsB(`!document.getElementById('convite').classList.contains('tem') ? 'ok' : null`), 15000, 300);
     ok('GRUPO: ✕ em "chamando B…" para de tocar em B', parou === 'ok');
     await jsA(`window.__bigasEstado.entrarEmEstado('nenhuma'); true`);
+  }
+
+  // ===== GRUPOS ("servidores") =====
+  {
+    const nomeG = 'Grupo teste ' + String(Date.now()).slice(-5);
+    let gid = null;
+    try { gid = await jsA(`window.__bigasEstado.criarGrupo(${JSON.stringify(nomeG)})`); }
+    catch (e) { ok('GRUPOS: criar grupo (precisa das REGRAS v4 publicadas no console do Firebase)', false, String(e && e.message).slice(0, 120)); }
+    if (gid) {
+      ok('GRUPOS: A criou o grupo', true, gid);
+      await jsA(`window.__bigasEstado.abrirGrupo(${JSON.stringify(gid)}); true`);
+      const abriu = await esperarAte(() => jsA(`(function(){ var E = window.__bigasEstado; return !document.getElementById('cab-grupo').hidden && E.grupo.canais.size === 2 && document.querySelectorAll('#trilho-grupos .grupo-ic').length >= 1 ? document.getElementById('grupo-nome').textContent : null; })()`), 10000, 300);
+      ok('GRUPOS: o grupo abre com #geral e 🔊 Geral e aparece no trilho', abriu === nomeG, abriu);
+      const codigo = await esperarAte(() => jsA(`(function(){ var g = window.__bigasEstado.grupos.get(${JSON.stringify(gid)}); return g && g.codigo ? g.codigo : null; })()`), 8000, 300);
+      ok('GRUPOS: o grupo tem código de entrada', !!codigo && /^[A-Z0-9]{6}$/.test(codigo), codigo);
+      // B entra pelo código
+      let entrou = null;
+      try { entrou = await jsB(`window.__bigasEstado.entrarPorCodigo(${JSON.stringify(codigo)})`); } catch (e) { entrou = 'erro ' + (e && e.message); }
+      ok('GRUPOS: B entra pelo código', entrou === gid, String(entrou));
+      await jsB(`window.__bigasEstado.abrirGrupo(${JSON.stringify(gid)}); true`);
+      const membrosB = await esperarAte(() => jsB(`(function(){ var t = [...document.querySelectorAll('#membros .nome')].map(e => e.textContent); return t.length === 2 ? t.join('|') : null; })()`), 12000, 300);
+      ok('GRUPOS: B vê os dois membros (A como dono)', /teste_bigas_a/.test(membrosB || '') && /teste_bigas_b/.test(membrosB || ''), membrosB);
+      const donoB = await jsB(`(function(){ return [...document.querySelectorAll('#membros .estado')].map(e => e.textContent).join('|'); })()`);
+      ok('GRUPOS: B vê quem é o dono', /dono/.test(donoB || ''), donoB);
+      // chat no #geral
+      const textoG = 'no grupo ' + Date.now();
+      await jsA(`(function(){ var c = [...document.querySelectorAll('#canais-texto .canal')].find(e => /geral/.test(e.textContent)); if (c) c.click(); })(); true`);
+      await esperarAte(() => jsA(`document.getElementById('sec-chat').classList.contains('mostra') && /geral/.test(document.getElementById('chat-nick').textContent) ? 'ok' : null`), 5000, 200);
+      await jsA(`document.getElementById('chat-texto').value = ${JSON.stringify(textoG)}; document.getElementById('btn-enviar').click(); true`);
+      await jsB(`(function(){ var c = [...document.querySelectorAll('#canais-texto .canal')].find(e => /geral/.test(e.textContent)); if (c) c.click(); })(); true`);
+      const chegouG = await esperarAte(() => jsB(`(function(){ var m = [...document.querySelectorAll('#mensagens .msg')].find(e => e.textContent.includes(${JSON.stringify(textoG)})); return m ? (m.querySelector('.quem') || {}).textContent || 'sem nome' : null; })()`), 15000, 300);
+      ok('GRUPOS: mensagem no #geral chega em B com o nome de quem escreveu', chegouG === 'teste_bigas_a', chegouG);
+      await jsA(`document.getElementById('btn-fechar-chat').click(); true`);
+      await jsB(`document.getElementById('btn-fechar-chat').click(); true`);
+      // A entra no canal de voz (sala fixa do canal, sozinho): vira "conectado", B vê A dentro do canal
+      await jsA(`(function(){ var c = document.querySelector('#canais-voz .canal-voz'); if (c) c.click(); })(); true`);
+      const noCanal = await esperarAte(() => jsA(`(function(){ var c = window.__bigasEstado.call; return c.estado === 'conectada' && c.grupo === ${JSON.stringify(gid)} ? document.getElementById('call-sub').textContent : null; })()`), 40000, 400);
+      ok('GRUPOS: A entra no canal de voz e fica "conectado" mesmo sozinho', !!noCanal, noCanal);
+      const dentroB = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais-voz .dentro'); return d && /teste_bigas_a/.test(d.textContent) ? d.textContent : null; })()`), 15000, 400);
+      ok('GRUPOS: B vê A dentro do canal de voz', !!dentroB, dentroB);
+      const estadoView = janelaA.contentView.children[0] ? await janelaA.contentView.children[0].webContents.executeJavaScript(`document.getElementById('sala-txt').textContent`).catch(() => '') : 'sem view';
+      ok('GRUPOS: o texto do site dentro do canal fala em canal, não em "chamando"', /canal/.test(estadoView) && !/chamando/.test(estadoView), estadoView);
+      await jsA(`document.getElementById('btn-sair-call').click(); true`);
+      const saiu = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais-voz .dentro'); return !d || !/teste_bigas_a/.test(d.textContent) ? 'ok' : null; })()`), 15000, 400);
+      ok('GRUPOS: A sai do canal e some da lista de B', saiu === 'ok');
+      // dono tira B; convida de volta por pedido; B aceita
+      await jsA(`window.__bigasEstado.expulsar(${JSON.stringify(gid)}, ${JSON.stringify(uidB)})`);
+      const foraB = await esperarAte(() => jsB(`!window.__bigasEstado.grupos.has(${JSON.stringify(gid)}) && document.getElementById('cab-grupo').hidden ? 'ok' : null`), 15000, 400);
+      ok('GRUPOS: expulso, B perde o grupo do trilho (e a tela volta pros amigos)', foraB === 'ok');
+      await jsA(`window.__bigasEstado.convidarParaGrupo(${JSON.stringify(uidB)}, ${JSON.stringify(NICK_B)})`);
+      const conviteB = await esperarAte(() => jsB(`(function(){ var c = [...document.querySelectorAll('#pedidos .cartinha')].find(e => /convidou pro grupo/.test(e.textContent)); return c ? c.textContent : null; })()`), 15000, 300);
+      ok('GRUPOS: B recebe o convite pro grupo como pedido', !!conviteB && conviteB.includes(nomeG), conviteB);
+      await jsB(`(function(){ var c = [...document.querySelectorAll('#pedidos .cartinha')].find(e => /convidou pro grupo/.test(e.textContent)); if (c) c.querySelector('.sim').click(); })(); true`);
+      const voltou = await esperarAte(() => jsB(`window.__bigasEstado.grupos.has(${JSON.stringify(gid)}) ? 'ok' : null`), 15000, 400);
+      ok('GRUPOS: B aceita e volta pro grupo', voltou === 'ok');
+      // apagar o grupo: some pros dois
+      await jsA(`window.confirm = () => true; window.__bigasEstado.abrirGrupo(${JSON.stringify(gid)}); true`);
+      await espera(500);
+      await jsA(`window.__bigasEstado.apagarGrupo()`);
+      const sumiu = await esperarAte(async () => (!(await jsA(`window.__bigasEstado.grupos.has(${JSON.stringify(gid)})`)) && !(await jsB(`window.__bigasEstado.grupos.has(${JSON.stringify(gid)})`))) ? 'ok' : null, 20000, 500);
+      ok('GRUPOS: dono apaga o grupo → some pros dois', sumiu === 'ok');
+    }
   }
 
   // bloqueio: B bloqueia A → A não consegue mais mandar mensagem (regra do servidor); B desbloqueia

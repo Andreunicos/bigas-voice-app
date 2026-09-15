@@ -11,6 +11,7 @@
   }
   :root{ color-scheme:dark }
   *{ box-sizing:border-box }
+  [hidden]{ display:none !important }
   html,body{ height:100% }
   body{
     margin:0; background:var(--fundo); color:var(--txt);
@@ -153,6 +154,46 @@
   .amigo .acoes .chamar:hover:not(:disabled){ background:var(--verde); color:#0c0d10 }
   .amigo .acoes .mais:hover{ background:var(--sup3); color:var(--txt) }
   .vazio{ color:var(--txt3); font-size:12.5px; text-align:center; padding:22px 14px; line-height:1.6 }
+
+  /* grupos no trilho */
+  .trilho button.icone{ position:relative; padding:0 }
+  .trilho .icone .bolinha{ position:absolute; right:-4px; top:-4px; font-size:10px; min-width:16px; height:16px; border:2px solid var(--sup) }
+  .trilho .grupo-ic{ width:44px; height:44px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; color:#fff; letter-spacing:.02em; transition:border-radius .12s; margin-bottom:10px }
+  .trilho .grupo-ic:hover{ border-radius:10px }
+  .trilho .grupo-ic.ativo{ border-radius:10px; outline:2px solid #fff; outline-offset:2px }
+  .trilho .mais-grupo{ font-size:22px; color:var(--verde) }
+  .trilho .mais-grupo:hover{ background:var(--verde); color:#0c0d10 }
+  #trilho-grupos{ display:flex; flex-direction:column; align-items:center; max-height:40vh; overflow-y:auto; overflow-x:hidden; padding:2px }
+  #trilho-grupos::-webkit-scrollbar{ width:0 }
+  .cab-grupo{ justify-content:space-between }
+  .cab-grupo .mais{ width:28px; height:28px; border-radius:8px; color:var(--txt2); font-size:16px }
+  .cab-grupo .mais:hover{ background:var(--sup3); color:var(--txt) }
+  .canal{ display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:8px; cursor:pointer; color:var(--txt2); font-size:13.5px; font-weight:500 }
+  .canal:hover, .canal.aberto{ background:var(--sup3); color:var(--txt) }
+  .canal .tag{ color:var(--txt3); width:16px; text-align:center; flex-shrink:0 }
+  .canal .nome{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .canal.nele{ color:var(--verde) }
+  .canal .dentro{ display:flex; flex-direction:column; gap:2px; padding:2px 0 4px 30px }
+  .canal .dentro .p{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--txt2) }
+  .canal .dentro .p .avatar{ width:20px; height:20px; font-size:9px }
+  .canal-voz{ flex-direction:column; align-items:stretch; gap:0 }
+  .canal-voz .linha{ display:flex; align-items:center; gap:8px }
+  .membro .estado.dono{ color:var(--amarelo) }
+
+  /* modais (criar grupo, código, convidar, canal) */
+  .modal{ position:fixed; inset:0; z-index:55; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.55) }
+  .modal.mostra{ display:flex }
+  .modal .caixa{ width:min(420px, 92vw); background:var(--sup2); border:1px solid var(--linha2); border-radius:16px; padding:22px; display:flex; flex-direction:column; gap:10px; box-shadow:0 30px 60px rgba(0,0,0,.5) }
+  .modal .caixa > b{ font-size:16px }
+  .modal .caixa small{ color:var(--txt3); font-size:12px; line-height:1.45 }
+  .modal .botoes{ display:flex; gap:8px; justify-content:flex-end; margin-top:4px }
+  .modal .botoes button{ padding:9px 16px }
+  .modal .abas{ display:flex; gap:4px; background:var(--sup); padding:4px; border-radius:11px; margin-bottom:6px }
+  .modal .abas button{ flex:1; padding:8px; border-radius:8px; color:var(--txt2); font-size:13px }
+  .modal .abas button.ativa{ background:var(--sup4); color:var(--txt) }
+  .modal .lista .amigo{ cursor:default }
+  .modal .lista .amigo button{ padding:6px 10px; font-size:12px }
+  .msg .quem{ font-size:11px; color:var(--azul2); padding:0 4px; font-weight:600 }
 
   /* menu do amigo (botão direito / ⋯) */
   #menu-amigo{
@@ -414,16 +455,20 @@
         </svg>
       </div>
       <div class="risco"></div>
-      <div class="icone ativo" title="Amigos">🏠</div>
+      <button class="icone ativo" id="btn-casa" type="button" title="Amigos">🏠<span class="bolinha" id="bolinha-casa" hidden>0</span></button>
       <button class="icone" id="btn-historico" type="button" title="Histórico de chamadas">🕘</button>
+      <div class="risco"></div>
+      <div id="trilho-grupos"></div>
+      <button class="icone mais-grupo" id="btn-novo-grupo" type="button" title="Criar ou entrar num grupo">+</button>
       <div class="espaco"></div>
       <button class="icone" id="btn-ajustes" type="button" title="Ajustes">⚙</button>
     </div>
 
     <div class="coluna-amigos">
-      <div class="cabecalho">Amigos <span class="bolinha" id="bolinha-pedidos" hidden>0</span></div>
+      <div class="cabecalho" id="cab-amigos">Amigos <span class="bolinha" id="bolinha-pedidos" hidden>0</span></div>
+      <div class="cabecalho cab-grupo" id="cab-grupo" hidden><span id="grupo-nome"></span><button class="mais" id="btn-menu-grupo" type="button" title="Mais">⋯</button></div>
 
-      <div class="add-amigo">
+      <div class="add-amigo" id="add-amigo">
         <input id="add-nick" type="text" maxlength="18" placeholder="adicionar pelo nick" autocomplete="off" spellcheck="false">
         <button id="btn-add" class="b-azul" type="button" title="Mandar pedido de amizade">+</button>
       </div>
@@ -451,6 +496,15 @@
         </div>
         <h2 id="titulo-lista">Amigos</h2>
         <div class="lista" id="lista-amigos"></div>
+      </div>
+
+      <div class="rolagem" id="rolagem-grupo" hidden>
+        <h2>Canais de texto <button class="link" id="btn-novo-canal-texto" type="button" hidden>+ canal</button></h2>
+        <div class="lista" id="canais-texto"></div>
+        <h2>Canais de voz <button class="link" id="btn-novo-canal-voz" type="button" hidden>+ canal</button></h2>
+        <div class="lista" id="canais-voz"></div>
+        <h2 id="titulo-membros">Membros</h2>
+        <div class="lista" id="membros"></div>
       </div>
 
       <div class="painel-call" id="painel-call">
@@ -650,6 +704,44 @@
   </div>
 
   <div id="menu-amigo"></div>
+
+  <div class="modal" id="modal-grupo">
+    <div class="caixa">
+      <div class="abas"><button type="button" id="aba-criar" class="ativa">Criar grupo</button><button type="button" id="aba-entrar">Entrar com código</button></div>
+      <div id="pag-criar">
+        <label for="grupo-novo-nome">Nome do grupo</label>
+        <input id="grupo-novo-nome" type="text" maxlength="30" placeholder="ex: Os Bigas" autocomplete="off" spellcheck="false">
+        <small>Vem com um canal de texto (#geral) e um canal de voz (🔊 Geral). Você pode criar mais depois.</small>
+        <p class="erro" id="erro-grupo"></p>
+        <div class="botoes"><button class="b-cinza" type="button" id="btn-grupo-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-grupo-criar">Criar</button></div>
+      </div>
+      <div id="pag-entrar" hidden>
+        <label for="grupo-codigo">Código do grupo</label>
+        <input id="grupo-codigo" type="text" maxlength="8" placeholder="ex: K7P2QW" autocomplete="off" spellcheck="false" style="text-transform:uppercase;letter-spacing:.15em;font-family:ui-monospace,Consolas,monospace">
+        <small>Quem está no grupo pega o código em ⋯ › Copiar código.</small>
+        <p class="erro" id="erro-codigo"></p>
+        <div class="botoes"><button class="b-cinza" type="button" id="btn-codigo-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-codigo-entrar">Entrar</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-convidar">
+    <div class="caixa">
+      <b id="convidar-titulo">Convidar pro grupo</b>
+      <small>Só amigos da sua lista. Eles recebem um pedido e entram se quiserem.</small>
+      <div class="lista" id="lista-convidar" style="max-height:300px;overflow-y:auto"></div>
+      <div class="botoes"><button class="b-cinza" type="button" id="btn-convidar-fechar">Fechar</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-canal">
+    <div class="caixa">
+      <b id="canal-titulo">Novo canal</b>
+      <input id="canal-nome" type="text" maxlength="24" placeholder="nome do canal" autocomplete="off" spellcheck="false">
+      <p class="erro" id="erro-canal"></p>
+      <div class="botoes"><button class="b-cinza" type="button" id="btn-canal-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-canal-criar">Criar</button></div>
+    </div>
+  </div>
 
   <script>
     // Sem internet a casa não liga (o Firebase vem da rede). Isto aqui é

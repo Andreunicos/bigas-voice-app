@@ -77,6 +77,7 @@ const call = {
   link: '',                    // link da sala atual (pra chamar mais gente)
   conviteRef: null,            // meu convite (quando fui eu que chamei)
   extras: [],                  // todos os convites que mandei nesta call (grupo incluso)
+  grupo: null, canal: null, grupoNome: '', canalNome: '', // quando a call é um canal de voz de um grupo
   chamando: new Map(),         // convites extras ainda tocando: ref.id → { nick, uid, ref, parar }
   pararConvite: null,
   pararAceito: null,           // (quem atendeu) ouve se quem chamou desligou antes de conectar
@@ -84,7 +85,9 @@ const call = {
   mudo: false, surdo: false,
 };
 
-const chat = { com: null, nick: '', parar: null };
+const chat = { com: null, nick: '', parar: null, grupo: null }; // grupo = { gid, cid } quando é um canal de texto
+const SITE = 'https://andreunicos.github.io/';
+let convitesDeGrupo = [];      // pedidos com estado 'grupo' pra mim
 let config = {};
 let jogoAgora = '';            // jogo conhecido aberto (o app avisa)
 let historicoAberto = false;
@@ -291,6 +294,7 @@ onAuthStateChanged(auth, async (usuario) => {
   ouvirPedidos();
   ouvirConvites();
   ouvirPerdidas();
+  ouvirGrupos();
 });
 
 function desligarTudo(){
@@ -300,7 +304,8 @@ function desligarTudo(){
   amigos.clear();
   bloqueados.clear();
   clearInterval(batida); batida = null;
-  pedidosChegando = []; convitesChegando = []; perdidas = [];
+  pedidosChegando = []; convitesChegando = []; perdidas = []; convitesDeGrupo = [];
+  fecharGrupo(); grupos.forEach((g) => { if (g.parar) g.parar(); }); grupos.clear(); pintarTrilho();
   fecharChat(); fecharLateral();
   pararSom();
   pintarConvite(); pintarPedidos(); pintarPerdidas(); pintarAmigos();
@@ -311,6 +316,7 @@ function desligarTudo(){
  * =================================================================== */
 function bater(){
   if (!eu.uid) return;
+  if (call.grupo && call.estado !== 'nenhuma') marcarCanalVoz(call.grupo, call.canal);
   setDoc(doc(db, 'usuarios', eu.uid), {
     ultimoVisto: serverTimestamp(), emChamada: call.estado !== 'nenhuma', jogando: jogoAgora || '',
   }, { merge: true }).catch(() => {});
@@ -426,6 +432,18 @@ function ouvirPedidos(){
     });
   }, (e) => console.error(e)));
 
+  // convites pra GRUPO (estado 'grupo'): aparecem junto dos pedidos
+  paradores.push(onSnapshot(query(collection(db, 'pedidos'), where('para', '==', eu.uid), where('estado', '==', 'grupo')), (snap) => {
+    const antes = new Set(convitesDeGrupo.map((d) => d.id));
+    convitesDeGrupo = snap.docs;
+    pintarPedidos();
+    snap.docs.forEach((d) => {
+      const c = d.data();
+      if (!antes.has(d.id) && (ms(c.quando) || Date.now()) > carregadoEm && !bloqueados.has(c.de))
+        ponte.notificar('Convite pra grupo', c.deNick + ' te convidou pro grupo ' + c.gnome);
+    });
+  }, (e) => console.error(e)));
+
   // pedidos MEUS que foram aceitos: eu completo o meu lado da amizade
   // (cada pedido uma vez só — o snapshot pode repetir o doc antes de o
   // "concluido" chegar ao servidor)
@@ -468,10 +486,29 @@ async function recusarPedido(d){
 
 function pintarPedidos(){
   const vivos = pedidosChegando.filter((d) => !bloqueados.has(d.data().de));
-  $('bloco-pedidos').hidden = !vivos.length;
-  $('bolinha-pedidos').hidden = !vivos.length;
-  $('bolinha-pedidos').textContent = String(vivos.length);
+  const deGrupo = convitesDeGrupo.filter((d) => !bloqueados.has(d.data().de) && !grupos.has(d.data().gid));
+  const total = vivos.length + deGrupo.length;
+  $('bloco-pedidos').hidden = !total;
+  $('bolinha-pedidos').hidden = !total;
+  $('bolinha-pedidos').textContent = String(total);
+  $('bolinha-casa').hidden = !total || !grupo.gid;
+  $('bolinha-casa').textContent = String(total);
   const caixa = $('pedidos'); caixa.innerHTML = '';
+  deGrupo.forEach((d) => {
+    const c = d.data();
+    const el = document.createElement('div'); el.className = 'cartinha';
+    const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(c.gnome); av.style.background = corDoGrupo(c.gid); av.style.color = '#fff';
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const b = document.createElement('b'); b.textContent = c.gnome;
+    const sm = document.createElement('small'); sm.textContent = c.deNick + ' te convidou pro grupo';
+    txt.append(b, sm);
+    const sim = document.createElement('button'); sim.className = 'sim'; sim.textContent = '✓'; sim.title = 'Entrar no grupo';
+    sim.onclick = async () => { sim.disabled = true; try { await entrarPorCodigo(c.codigo); await updateDoc(d.ref, { estado: 'concluido' }); recado('Você entrou em ' + c.gnome + '.', 'bem'); } catch (e) { console.error(e); recado('Não consegui entrar no grupo (' + ((e && e.code) || e.message || 'erro') + ').', 'mal'); sim.disabled = false; } };
+    const nao = document.createElement('button'); nao.className = 'nao'; nao.textContent = '×'; nao.title = 'Recusar';
+    nao.onclick = async () => { nao.disabled = true; try { await updateDoc(d.ref, { estado: 'recusado' }); } catch { nao.disabled = false; } };
+    el.append(av, txt, sim, nao);
+    caixa.appendChild(el);
+  });
   vivos.forEach((d) => {
     const c = d.data();
     const el = document.createElement('div'); el.className = 'cartinha';
@@ -629,14 +666,28 @@ function marcarLido(uid, t){
 
 function abrirChat(uid, nick){
   if (chat.parar) { chat.parar(); chat.parar = null; }
-  chat.com = uid; chat.nick = nick;
+  chat.com = uid; chat.nick = nick; chat.grupo = null;
   $('chat-nick').textContent = nick;
-  $('chat-av').textContent = iniciais(nick);
+  $('chat-av').textContent = iniciais(nick); $('chat-av').style.background = '';
   $('mensagens').innerHTML = '<p class="vazio">Carregando…</p>';
   mostrarLateral('sec-chat');
   marcarLido(uid, Date.now());
   pintarAmigos();
-  const ref = query(collection(db, 'conversas', idConversa(uid), 'mensagens'), orderBy('quando', 'desc'), limit(200));
+  ligarMensagens(query(collection(db, 'conversas', idConversa(uid), 'mensagens'), orderBy('quando', 'desc'), limit(200)), () => marcarLido(uid, Date.now()));
+}
+// canal de texto de um grupo: a mesma lateral, com o nome de quem escreveu
+function abrirCanalTexto(cid){
+  const c = grupo.canais.get(cid); if (!c) return;
+  if (chat.parar) { chat.parar(); chat.parar = null; }
+  chat.com = null; chat.nick = '#' + c.nome; chat.grupo = { gid: grupo.gid, cid };
+  $('chat-nick').textContent = '# ' + c.nome;
+  $('chat-av').textContent = '#'; $('chat-av').style.background = corDoGrupo(grupo.gid);
+  $('mensagens').innerHTML = '<p class="vazio">Carregando…</p>';
+  mostrarLateral('sec-chat');
+  pintarGrupo();
+  ligarMensagens(query(collection(db, 'grupos', grupo.gid, 'canais', cid, 'mensagens'), orderBy('quando', 'desc'), limit(200)), null);
+}
+function ligarMensagens(ref, aoLer){
   chat.parar = onSnapshot(ref, (snap) => {
     const caixa = $('mensagens');
     const estavaEmbaixo = caixa.scrollTop + caixa.clientHeight >= caixa.scrollHeight - 40;
@@ -651,29 +702,32 @@ function abrirChat(uid, nick){
       const dd = dia(m.quando) || 'agora';
       if (dd !== diaAnterior) { const s = document.createElement('div'); s.className = 'msg dia'; s.textContent = dd; caixa.appendChild(s); diaAnterior = dd; }
       const el = document.createElement('div'); el.className = 'msg' + (m.de === eu.uid ? ' minha' : '');
+      if (chat.grupo && m.de !== eu.uid) { const q = document.createElement('div'); q.className = 'quem'; q.textContent = m.deNick || '…'; el.appendChild(q); }
       const t = document.createElement('div'); t.className = 'texto'; t.textContent = m.texto || '';
       const h = document.createElement('div'); h.className = 'hora'; h.textContent = hora(m.quando);
       el.append(t, h); caixa.appendChild(el);
     });
     if (estavaEmbaixo || snap.docChanges().some((c) => c.type === 'added')) caixa.scrollTop = caixa.scrollHeight;
-    marcarLido(uid, Date.now());
+    if (aoLer) aoLer();
   }, (e) => { console.error(e); $('mensagens').innerHTML = '<p class="vazio">Não consegui abrir a conversa (' + (e.code || 'erro') + ').</p>'; });
   setTimeout(() => $('chat-texto').focus(), 50);
 }
 function fecharChat(){
   if (chat.parar) { chat.parar(); chat.parar = null; }
-  chat.com = null; chat.nick = '';
+  chat.com = null; chat.nick = ''; chat.grupo = null;
   if ($('sec-chat').classList.contains('mostra')) fecharLateral();
   pintarAmigos();
+  if (grupo.gid) pintarGrupo();
 }
 $('btn-fechar-chat').onclick = fecharChat;
 
 async function enviarMensagem(){
   const texto = $('chat-texto').value.trim();
-  if (!texto || !chat.com) return;
+  if (!texto || (!chat.com && !chat.grupo)) return;
   $('chat-texto').value = ''; ajustarAltura();
   try{
-    await addDoc(collection(db, 'conversas', idConversa(chat.com), 'mensagens'), { de: eu.uid, texto, quando: serverTimestamp() });
+    if (chat.grupo) await addDoc(collection(db, 'grupos', chat.grupo.gid, 'canais', chat.grupo.cid, 'mensagens'), { de: eu.uid, deNick: eu.nick, texto, quando: serverTimestamp() });
+    else await addDoc(collection(db, 'conversas', idConversa(chat.com), 'mensagens'), { de: eu.uid, texto, quando: serverTimestamp() });
   }catch(e){
     console.error(e);
     recado(e && e.code === 'permission-denied' ? 'Não dá pra mandar: vocês não são mais amigos (ou essa pessoa te bloqueou).' : 'A mensagem não foi (' + ((e && e.code) || 'erro') + ').', 'mal');
@@ -867,6 +921,9 @@ function entrarEmEstado(estado, com, papel){
     call.extras = []; call.comUid = null; call.conectouEm = 0;
     call.chamando.forEach((c) => { if (c.parar) c.parar(); }); call.chamando.clear();
     call.gente = [];
+    if (call.grupo) marcarCanalVoz(call.grupo, '');
+    call.grupo = null; call.canal = null; call.grupoNome = ''; call.canalNome = '';
+    if (grupo.gid) pintarGrupo();
     $('call-rede').hidden = true;
     clearTimeout(call.relogio); call.relogio = null;
     if (call.pararConvite) { call.pararConvite(); call.pararConvite = null; }
@@ -889,12 +946,13 @@ function pintarCall(){
   $('call-girando').hidden = call.estado !== 'conectando';
   if (call.estado === 'conectando') {
     $('call-titulo').textContent = call.papel === 'chamando' ? 'Chamando…' : 'Entrando…';
-    $('call-sub').textContent = call.com;
+    $('call-sub').textContent = call.grupo ? '🔊 ' + call.canalNome + ' · ' + call.grupoNome : call.com;
   } else if (call.estado === 'conectada') {
-    $('call-titulo').textContent = '🔊 Em chamada';
+    $('call-titulo').textContent = call.grupo ? '🔊 ' + call.canalNome : '🔊 Em chamada';
     // quem está de fato na call (a view conta), não só quem eu chamei
     const outros = (call.gente || []).filter((g) => !g.eu).map((g) => g.nome).filter(Boolean);
-    $('call-sub').textContent = 'com ' + (outros.length ? outros.join(', ') : call.com) + (call.ping ? ' · ' + call.ping + ' ms' : '') + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
+    const com = outros.length ? 'com ' + outros.join(', ') : (call.grupo ? 'só você por enquanto' : 'com ' + call.com);
+    $('call-sub').textContent = (call.grupo ? call.grupoNome + ' · ' : '') + com + (call.ping ? ' · ' + call.ping + ' ms' : '') + (Number.isFinite(call.gpu) ? ' · placa ' + call.gpu + '%' : '');
     $('call-rede').hidden = !call.religando;
     $('call-rede').textContent = '⟳ a conexão caiu — reconectando…';
   }
@@ -973,9 +1031,11 @@ ponte.aoMudarCall(async (d) => {
     if (call.estado !== 'nenhuma') { if (!call.conectouEm) call.conectouEm = Date.now(); entrarEmEstado('conectada'); }
     pararSom();
     bater();
+    if (call.grupo) marcarCanalVoz(call.grupo, call.canal);
   } else if (d.estado === 'encerrada') {
     const refs = call.extras.slice();
-    if (call.com) anotarNoHistorico({ tipo: call.papel === 'atendendo' ? 'recebi' : 'fiz', nick: call.com, uid: call.comUid, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
+    if (call.com && !call.grupo) anotarNoHistorico({ tipo: call.papel === 'atendendo' ? 'recebi' : 'fiz', nick: call.com, uid: call.comUid, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
+    else if (call.grupo) anotarNoHistorico({ tipo: 'fiz', nick: '🔊 ' + call.canalNome + ' · ' + call.grupoNome, uid: null, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
     entrarEmEstado('nenhuma');
     bater();
     for (const ref of refs) await pararMeuConvite(ref);
@@ -1119,6 +1179,357 @@ function pintarPerdidas(){
   });
 }
 $('btn-limpar-perdidas').onclick = () => { guardarLocal('perdidasVistoAte:' + eu.uid, Date.now()); pintarPerdidas(); };
+
+/* =====================================================================
+ * GRUPOS ("servidores") — canais de texto, canais de voz, membros
+ * ---------------------------------------------------------------------
+ * Um grupo tem dono, código de entrada (6 letras), canais de texto (chat
+ * com histórico, igual o DM) e canais de voz. Um canal de voz é uma SALA
+ * FIXA do site (o link nunca muda): entrar no canal = entrar nessa sala,
+ * sem tocar pra ninguém — quem está dentro aparece na lista.
+ * =================================================================== */
+const grupos = new Map();   // gid → { nome, dono, codigo, cor, parar }
+const grupo = { gid: null, dados: null, canais: new Map(), membros: new Map(), presenca: new Map(), parar: [] };
+
+function corDoGrupo(gid){ let h = 0; for (const c of String(gid)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return 'hsl(' + (h % 360) + ' 55% 42%)'; }
+function idAleatorio(n){ const a = 'abcdefghijkmnopqrstuvwxyz23456789'; const b = crypto.getRandomValues(new Uint8Array(n)); return Array.from(b, (x) => a[x % a.length]).join(''); }
+function codigoNovo(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const b = crypto.getRandomValues(new Uint8Array(6)); return Array.from(b, (x) => a[x % a.length]).join(''); }
+function b64u(bytes){ return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+// a sala fixa de um canal de voz: o MESMO formato de link do site (#e=<id>~<chave>);
+// o site continua fazendo tudo (cifra, sinal, malha) — aqui só se sorteia id e chave
+function linkDeCanal(){ return SITE + '#e=' + idAleatorio(12) + '~' + b64u(crypto.getRandomValues(new Uint8Array(16))); }
+function souDono(){ const g = grupos.get(grupo.gid); return !!(g && g.dono === eu.uid); }
+
+function ouvirGrupos(){
+  paradores.push(onSnapshot(collection(db, 'usuarios', eu.uid, 'grupos'), (snap) => {
+    const vivos = new Set();
+    snap.forEach((d) => {
+      vivos.add(d.id);
+      if (grupos.has(d.id)) return;
+      const g = { nome: d.data().nome || '…', dono: '', codigo: '', cor: corDoGrupo(d.id), parar: null };
+      g.parar = onSnapshot(doc(db, 'grupos', d.id), (u) => {
+        if (!u.exists()) { sairDoGrupoLocal(d.id); return; } // o grupo foi apagado
+        g.nome = u.data().nome || g.nome; g.dono = u.data().dono; g.codigo = u.data().codigo;
+        if (grupo.gid === d.id) { grupo.dados = u.data(); pintarGrupo(); }
+        pintarTrilho();
+      }, (e) => { if (e && e.code === 'permission-denied') sairDoGrupoLocal(d.id); }); // fui tirado do grupo
+      grupos.set(d.id, g);
+    });
+    grupos.forEach((g, id) => { if (!vivos.has(id)) { if (g.parar) g.parar(); grupos.delete(id); if (grupo.gid === id) fecharGrupo(); } });
+    pintarTrilho(); pintarPedidos();
+  }, (e) => console.error(e)));
+}
+// o grupo sumiu ou me tiraram: some do meu índice (e do trilho)
+function sairDoGrupoLocal(gid){
+  deleteDoc(doc(db, 'usuarios', eu.uid, 'grupos', gid)).catch(() => {});
+  if (grupo.gid === gid) { fecharGrupo(); recado('Você não está mais nesse grupo.', ''); }
+}
+
+function pintarTrilho(){
+  const t = $('trilho-grupos'); t.innerHTML = '';
+  [...grupos.entries()].sort((a, b) => a[1].nome.localeCompare(b[1].nome)).forEach(([gid, g]) => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'grupo-ic' + (grupo.gid === gid ? ' ativo' : '');
+    b.style.background = g.cor; b.textContent = iniciais(g.nome); b.title = g.nome;
+    b.onclick = () => { if (grupo.gid === gid) fecharGrupo(); else abrirGrupo(gid); };
+    t.appendChild(b);
+  });
+  $('btn-casa').classList.toggle('ativo', !grupo.gid);
+}
+
+function abrirGrupo(gid){
+  fecharGrupo();
+  grupo.gid = gid;
+  const g = grupos.get(gid);
+  $('cab-amigos').hidden = true; $('add-amigo').hidden = true; $('erro-add').hidden = true; $('lista-amigos').parentElement.hidden = true;
+  $('cab-grupo').hidden = false; $('rolagem-grupo').hidden = false;
+  $('grupo-nome').textContent = g ? g.nome : '…';
+  grupo.parar.push(onSnapshot(collection(db, 'grupos', gid, 'canais'), (snap) => {
+    grupo.canais.clear();
+    snap.forEach((d) => grupo.canais.set(d.id, Object.assign({ id: d.id }, d.data())));
+    // o canal de texto aberto sumiu?
+    if (chat.grupo && chat.grupo.gid === gid && !grupo.canais.has(chat.grupo.cid)) fecharChat();
+    pintarGrupo();
+  }, (e) => { console.error(e); if (e.code === 'permission-denied') sairDoGrupoLocal(gid); }));
+  grupo.parar.push(onSnapshot(collection(db, 'grupos', gid, 'membros'), (snap) => {
+    const vivos = new Set();
+    snap.forEach((d) => {
+      vivos.add(d.id);
+      grupo.membros.set(d.id, Object.assign({ uid: d.id }, d.data()));
+      if (!grupo.presenca.has(d.id)) {
+        const pr = { dados: null, parar: null };
+        pr.parar = onSnapshot(doc(db, 'usuarios', d.id), (u) => { pr.dados = u.exists() ? u.data() : null; pintarGrupo(); }, () => {});
+        grupo.presenca.set(d.id, pr);
+      }
+    });
+    [...grupo.membros.keys()].forEach((id) => { if (!vivos.has(id)) { grupo.membros.delete(id); const pr = grupo.presenca.get(id); if (pr && pr.parar) pr.parar(); grupo.presenca.delete(id); } });
+    if (!vivos.has(eu.uid)) { sairDoGrupoLocal(gid); return; } // me expulsaram
+    pintarGrupo();
+  }, (e) => { console.error(e); if (e.code === 'permission-denied') sairDoGrupoLocal(gid); }));
+  pintarTrilho(); pintarPedidos(); pintarGrupo();
+}
+function fecharGrupo(){
+  grupo.parar.forEach((p) => { try { p(); } catch {} }); grupo.parar = [];
+  grupo.presenca.forEach((pr) => { if (pr.parar) pr.parar(); }); grupo.presenca.clear();
+  grupo.canais.clear(); grupo.membros.clear(); grupo.gid = null; grupo.dados = null;
+  if (chat.grupo) fecharChat();
+  $('cab-amigos').hidden = false; $('add-amigo').hidden = false; $('erro-add').hidden = false; $('lista-amigos').parentElement.hidden = false;
+  $('cab-grupo').hidden = true; $('rolagem-grupo').hidden = true;
+  pintarTrilho(); pintarPedidos();
+}
+$('btn-casa').onclick = () => fecharGrupo();
+
+function noCanal(cid){
+  // quem está dentro de um canal de voz: canalVoz marcado e batida recente
+  return [...grupo.membros.values()].filter((m) => m.canalVoz === cid && ms(m.vistoEm) && Date.now() - ms(m.vistoEm) < OFFLINE_APOS_MS);
+}
+function pintarGrupo(){
+  if (!grupo.gid) return;
+  const g = grupos.get(grupo.gid);
+  $('grupo-nome').textContent = g ? g.nome : '…';
+  const dono = souDono();
+  $('btn-novo-canal-texto').hidden = !dono; $('btn-novo-canal-voz').hidden = !dono;
+  const canais = [...grupo.canais.values()].sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || String(a.nome).localeCompare(String(b.nome)));
+  const ct = $('canais-texto'); ct.innerHTML = '';
+  canais.filter((c) => c.tipo === 'texto').forEach((c) => {
+    const el = document.createElement('div'); el.className = 'canal' + (chat.grupo && chat.grupo.cid === c.id ? ' aberto' : '');
+    const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = '#';
+    const n = document.createElement('span'); n.className = 'nome'; n.textContent = c.nome;
+    el.append(tag, n);
+    el.onclick = () => abrirCanalTexto(c.id);
+    el.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuCanal(c, ev.clientX, ev.clientY); };
+    ct.appendChild(el);
+  });
+  const cv = $('canais-voz'); cv.innerHTML = '';
+  canais.filter((c) => c.tipo === 'voz').forEach((c) => {
+    const dentro = noCanal(c.id);
+    const euDentro = call.grupo === grupo.gid && call.canal === c.id && call.estado !== 'nenhuma';
+    const el = document.createElement('div'); el.className = 'canal canal-voz' + (euDentro ? ' nele' : '');
+    const linha = document.createElement('div'); linha.className = 'linha';
+    const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = '🔊';
+    const n = document.createElement('span'); n.className = 'nome'; n.textContent = c.nome;
+    linha.append(tag, n);
+    if (dentro.length) { const k = document.createElement('small'); k.style.color = 'var(--txt3)'; k.textContent = String(dentro.length); linha.appendChild(k); }
+    el.appendChild(linha);
+    if (dentro.length) {
+      const lista = document.createElement('div'); lista.className = 'dentro';
+      dentro.forEach((m) => {
+        const p = document.createElement('div'); p.className = 'p';
+        const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(m.nick);
+        const nm = document.createElement('span'); nm.textContent = m.nick + (m.uid === eu.uid ? ' (você)' : '');
+        p.append(av, nm); lista.appendChild(p);
+      });
+      el.appendChild(lista);
+    }
+    el.onclick = () => entrarNoCanalDeVoz(c.id);
+    el.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuCanal(c, ev.clientX, ev.clientY); };
+    cv.appendChild(el);
+  });
+  const membros = [...grupo.membros.values()].map((m) => { const pr = grupo.presenca.get(m.uid); return { m, p: presencaDe({ presenca: pr ? pr.dados : null }) }; })
+    .sort((x, y) => ((x.p === 'offline') - (y.p === 'offline')) || (x.m.papel === 'dono' ? -1 : 0) - (y.m.papel === 'dono' ? -1 : 0) || String(x.m.nick).localeCompare(String(y.m.nick)));
+  $('titulo-membros').textContent = 'Membros — ' + membros.length;
+  const lm = $('membros'); lm.innerHTML = '';
+  membros.forEach(({ m, p }) => {
+    const linha = document.createElement('div'); linha.className = 'amigo membro ' + p;
+    const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(m.nick);
+    const luz = document.createElement('span'); luz.className = 'luz'; av.appendChild(luz);
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const nome = document.createElement('div'); nome.className = 'nome'; nome.textContent = m.nick + (m.uid === eu.uid ? ' (você)' : '');
+    const estado = document.createElement('div'); estado.className = 'estado' + (g && g.dono === m.uid ? ' dono' : '');
+    const pr = grupo.presenca.get(m.uid); const jogo = p !== 'offline' && pr && pr.dados && pr.dados.jogando ? pr.dados.jogando : '';
+    estado.textContent = (g && g.dono === m.uid ? 'dono · ' : '') + (jogo ? '🎮 ' + jogo : p === 'emcall' ? 'em chamada' : p);
+    txt.append(nome, estado);
+    linha.append(av, txt);
+    linha.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuMembro(m, ev.clientX, ev.clientY); };
+    lm.appendChild(linha);
+  });
+}
+
+/* ---- entrar / criar / código ---- */
+function abrirModal(id){ $(id).classList.add('mostra'); }
+function fecharModal(id){ $(id).classList.remove('mostra'); }
+$('btn-novo-grupo').onclick = () => { $('erro-grupo').textContent = ''; $('erro-codigo').textContent = ''; $('grupo-novo-nome').value = ''; $('grupo-codigo').value = ''; abrirModal('modal-grupo'); setTimeout(() => $('grupo-novo-nome').focus(), 50); };
+$('aba-criar').onclick = () => { $('aba-criar').classList.add('ativa'); $('aba-entrar').classList.remove('ativa'); $('pag-criar').hidden = false; $('pag-entrar').hidden = true; $('grupo-novo-nome').focus(); };
+$('aba-entrar').onclick = () => { $('aba-entrar').classList.add('ativa'); $('aba-criar').classList.remove('ativa'); $('pag-entrar').hidden = false; $('pag-criar').hidden = true; $('grupo-codigo').focus(); };
+$('btn-grupo-cancelar').onclick = () => fecharModal('modal-grupo');
+$('btn-codigo-cancelar').onclick = () => fecharModal('modal-grupo');
+document.querySelectorAll('.modal').forEach((m) => { m.addEventListener('click', (ev) => { if (ev.target === m) m.classList.remove('mostra'); }); });
+
+async function criarGrupo(nome){
+  const gref = doc(collection(db, 'grupos'));
+  const codigo = codigoNovo();
+  await setDoc(gref, { nome, dono: eu.uid, donoNick: eu.nick, codigo, criadoEm: serverTimestamp() });
+  await setDoc(doc(db, 'grupos', gref.id, 'membros', eu.uid), { nick: eu.nick, papel: 'dono', entrouEm: serverTimestamp(), canalVoz: '', vistoEm: serverTimestamp() });
+  await setDoc(doc(db, 'grupos', gref.id, 'canais', 'geral'), { nome: 'geral', tipo: 'texto', ordem: 0, criadoEm: serverTimestamp() });
+  await setDoc(doc(db, 'grupos', gref.id, 'canais', 'voz'), { nome: 'Geral', tipo: 'voz', ordem: 0, link: linkDeCanal(), criadoEm: serverTimestamp() });
+  await setDoc(doc(db, 'codigosDeGrupo', codigo), { gid: gref.id, nome });
+  await setDoc(doc(db, 'usuarios', eu.uid, 'grupos', gref.id), { nome, entrouEm: serverTimestamp() });
+  return gref.id;
+}
+async function entrarPorCodigo(codigo){
+  codigo = String(codigo || '').trim().toUpperCase();
+  const c = await getDoc(doc(db, 'codigosDeGrupo', codigo));
+  if (!c.exists()) throw Object.assign(new Error('código não existe'), { code: 'codigo' });
+  const { gid, nome } = c.data();
+  await setDoc(doc(db, 'grupos', gid, 'membros', eu.uid), { nick: eu.nick, papel: 'membro', entrouEm: serverTimestamp(), canalVoz: '', vistoEm: serverTimestamp(), codigo });
+  await setDoc(doc(db, 'usuarios', eu.uid, 'grupos', gid), { nome, entrouEm: serverTimestamp() });
+  return gid;
+}
+$('btn-grupo-criar').onclick = async () => {
+  const nome = $('grupo-novo-nome').value.trim();
+  if (nome.length < 2) { $('erro-grupo').textContent = 'Dá um nome com pelo menos 2 letras.'; return; }
+  $('btn-grupo-criar').disabled = true;
+  try{ const gid = await criarGrupo(nome); fecharModal('modal-grupo'); recado('Grupo "' + nome + '" criado. Convida os amigos em ⋯.', 'bem'); setTimeout(() => abrirGrupo(gid), 300); }
+  catch(e){ console.error(e); $('erro-grupo').textContent = e && e.code === 'permission-denied' ? 'O servidor recusou (as regras de grupos não foram publicadas).' : 'Não consegui criar (' + ((e && e.code) || 'erro') + ').'; }
+  finally{ $('btn-grupo-criar').disabled = false; }
+};
+$('btn-codigo-entrar').onclick = async () => {
+  const codigo = $('grupo-codigo').value.trim().toUpperCase();
+  if (codigo.length < 4) { $('erro-codigo').textContent = 'Digita o código do grupo.'; return; }
+  $('btn-codigo-entrar').disabled = true;
+  try{ const gid = await entrarPorCodigo(codigo); fecharModal('modal-grupo'); recado('Você entrou no grupo.', 'bem'); setTimeout(() => abrirGrupo(gid), 300); }
+  catch(e){ console.error(e); $('erro-codigo').textContent = e && e.code === 'codigo' ? 'Esse código não existe.' : e && e.code === 'permission-denied' ? 'O servidor recusou esse código.' : 'Não consegui entrar (' + ((e && e.code) || 'erro') + ').'; }
+  finally{ $('btn-codigo-entrar').disabled = false; }
+};
+$('grupo-novo-nome').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('btn-grupo-criar').click(); });
+$('grupo-codigo').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('btn-codigo-entrar').click(); });
+
+/* ---- menu do grupo (⋯): convidar, código, renomear, sair, apagar ---- */
+$('btn-menu-grupo').onclick = (ev) => {
+  const g = grupos.get(grupo.gid); if (!g) return;
+  const m = $('menu-amigo'); m.innerHTML = '';
+  const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
+  item('👥 Convidar amigo', abrirConvidar);
+  item('🔑 Copiar código (' + (g.codigo || '…') + ')', async () => { try { await navigator.clipboard.writeText(g.codigo); recado('Código ' + g.codigo + ' copiado. Quem digitar em + › Entrar com código entra no grupo.', 'bem'); } catch { recado('Código do grupo: ' + g.codigo, ''); } });
+  if (souDono()) {
+    item('✏️ Renomear grupo', async () => { const n = prompt('Novo nome do grupo:', g.nome); if (!n || n.trim().length < 2) return; try { await updateDoc(doc(db, 'grupos', grupo.gid), { nome: n.trim().slice(0, 30) }); await setDoc(doc(db, 'usuarios', eu.uid, 'grupos', grupo.gid), { nome: n.trim().slice(0, 30) }, { merge: true }); } catch { recado('Não consegui renomear.', 'mal'); } });
+    item('🗑 Apagar grupo', apagarGrupo, true);
+  } else item('🚪 Sair do grupo', sairDoGrupo, true);
+  m.classList.add('mostra');
+  const r = ev.currentTarget.getBoundingClientRect();
+  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, r.left)) + 'px';
+  m.style.top = (r.bottom + 4) + 'px';
+  setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
+};
+async function sairDoGrupo(){
+  const g = grupos.get(grupo.gid); if (!g) return;
+  if (!confirm('Sair do grupo "' + g.nome + '"?')) return;
+  const gid = grupo.gid;
+  if (call.grupo === gid) sairDaCall();
+  try{ await deleteDoc(doc(db, 'grupos', gid, 'membros', eu.uid)); }catch{}
+  await deleteDoc(doc(db, 'usuarios', eu.uid, 'grupos', gid)).catch(() => {});
+  fecharGrupo();
+}
+async function apagarGrupo(){
+  const g = grupos.get(grupo.gid); if (!g) return;
+  if (!confirm('Apagar o grupo "' + g.nome + '" pra todo mundo? Não tem volta.')) return;
+  const gid = grupo.gid;
+  if (call.grupo === gid) sairDaCall();
+  try{
+    // apaga o que dá: canais e membros (as mensagens antigas ficam órfãs e inacessíveis — as regras exigem membro)
+    const cs = await getDocs(collection(db, 'grupos', gid, 'canais')); for (const d of cs.docs) await deleteDoc(d.ref).catch(() => {});
+    const ms2 = await getDocs(collection(db, 'grupos', gid, 'membros')); for (const d of ms2.docs) if (d.id !== eu.uid) await deleteDoc(d.ref).catch(() => {});
+    if (g.codigo) await deleteDoc(doc(db, 'codigosDeGrupo', g.codigo)).catch(() => {});
+    await deleteDoc(doc(db, 'grupos', gid, 'membros', eu.uid)).catch(() => {});
+    await deleteDoc(doc(db, 'grupos', gid));
+  }catch(e){ console.error(e); recado('Não consegui apagar tudo (' + ((e && e.code) || 'erro') + ').', 'mal'); }
+  await deleteDoc(doc(db, 'usuarios', eu.uid, 'grupos', gid)).catch(() => {});
+  fecharGrupo();
+}
+
+/* ---- convidar amigos (vira um pedido com estado 'grupo') ---- */
+function abrirConvidar(){
+  const g = grupos.get(grupo.gid); if (!g) return;
+  $('convidar-titulo').textContent = 'Convidar pro grupo ' + g.nome;
+  const lista = $('lista-convidar'); lista.innerHTML = '';
+  const candidatos = [...amigos.entries()].filter(([uid]) => !grupo.membros.has(uid)).sort((a, b) => a[1].nick.localeCompare(b[1].nick));
+  if (!candidatos.length) lista.innerHTML = '<p class="vazio">Todos os seus amigos já estão no grupo (ou você ainda não tem amigos na lista).</p>';
+  candidatos.forEach(([uid, a]) => {
+    const linha = document.createElement('div'); linha.className = 'amigo ' + presencaDe(a);
+    const av = document.createElement('div'); av.className = 'avatar'; av.textContent = iniciais(a.nick);
+    const luz = document.createElement('span'); luz.className = 'luz'; av.appendChild(luz);
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const nome = document.createElement('div'); nome.className = 'nome'; nome.textContent = a.nick; txt.appendChild(nome);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'b-azul'; b.textContent = 'Convidar';
+    b.onclick = async () => { b.disabled = true; try { await convidarParaGrupo(uid, a.nick); b.textContent = 'Convidado ✓'; } catch (e) { console.error(e); b.disabled = false; recado('Não consegui convidar ' + a.nick + '.', 'mal'); } };
+    linha.append(av, txt, b); lista.appendChild(linha);
+  });
+  abrirModal('modal-convidar');
+}
+$('btn-convidar-fechar').onclick = () => fecharModal('modal-convidar');
+async function convidarParaGrupo(uid, nick){
+  const g = grupos.get(grupo.gid);
+  await addDoc(collection(db, 'pedidos'), { de: eu.uid, deNick: eu.nick, para: uid, paraNick: nick, estado: 'grupo', gid: grupo.gid, gnome: g.nome, codigo: g.codigo, quando: serverTimestamp() });
+}
+
+/* ---- canais: criar / renomear / apagar (dono) ---- */
+let canalNovoTipo = 'texto';
+$('btn-novo-canal-texto').onclick = () => { canalNovoTipo = 'texto'; $('canal-titulo').textContent = 'Novo canal de texto'; $('canal-nome').value = ''; $('erro-canal').textContent = ''; abrirModal('modal-canal'); setTimeout(() => $('canal-nome').focus(), 50); };
+$('btn-novo-canal-voz').onclick = () => { canalNovoTipo = 'voz'; $('canal-titulo').textContent = 'Novo canal de voz'; $('canal-nome').value = ''; $('erro-canal').textContent = ''; abrirModal('modal-canal'); setTimeout(() => $('canal-nome').focus(), 50); };
+$('btn-canal-cancelar').onclick = () => fecharModal('modal-canal');
+$('btn-canal-criar').onclick = async () => {
+  const nome = $('canal-nome').value.trim().replace(/^#/, '');
+  if (nome.length < 1) { $('erro-canal').textContent = 'Dá um nome pro canal.'; return; }
+  $('btn-canal-criar').disabled = true;
+  try{
+    const ordem = grupo.canais.size;
+    const dados = { nome: nome.slice(0, 24), tipo: canalNovoTipo, ordem, criadoEm: serverTimestamp() };
+    if (canalNovoTipo === 'voz') dados.link = linkDeCanal();
+    await addDoc(collection(db, 'grupos', grupo.gid, 'canais'), dados);
+    fecharModal('modal-canal');
+  }catch(e){ console.error(e); $('erro-canal').textContent = 'Não consegui criar (' + ((e && e.code) || 'erro') + ').'; }
+  finally{ $('btn-canal-criar').disabled = false; }
+};
+$('canal-nome').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('btn-canal-criar').click(); });
+function abrirMenuCanal(c, x, y){
+  if (!souDono()) return;
+  const m = $('menu-amigo'); m.innerHTML = '';
+  const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
+  item('✏️ Renomear canal', async () => { const n = prompt('Novo nome do canal:', c.nome); if (!n || !n.trim()) return; try { await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { nome: n.trim().replace(/^#/, '').slice(0, 24) }); } catch { recado('Não consegui renomear.', 'mal'); } });
+  item('🗑 Apagar canal', async () => { if (!confirm('Apagar o canal "' + c.nome + '"?')) return; if (call.grupo === grupo.gid && call.canal === c.id) sairDaCall(); try { await deleteDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id)); } catch { recado('Não consegui apagar.', 'mal'); } }, true);
+  m.classList.add('mostra');
+  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
+  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
+}
+function abrirMenuMembro(mb, x, y){
+  if (mb.uid === eu.uid) return;
+  const m = $('menu-amigo'); m.innerHTML = '';
+  const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
+  if (amigos.has(mb.uid)) item('💬 Conversar', () => abrirChat(mb.uid, mb.nick));
+  else item('➕ Pedir amizade', () => { $('add-nick').value = mb.nick; fecharGrupo(); $('btn-add').click(); });
+  if (souDono()) item('🚫 Tirar do grupo', async () => { if (!confirm('Tirar ' + mb.nick + ' do grupo?')) return; try { await deleteDoc(doc(db, 'grupos', grupo.gid, 'membros', mb.uid)); } catch { recado('Não consegui tirar.', 'mal'); } }, true);
+  if (!m.children.length) return;
+  m.classList.add('mostra');
+  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
+  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
+}
+
+/* ---- canal de voz: entrar = entrar na sala fixa do canal ---- */
+function marcarCanalVoz(gid, cid){
+  if (!eu.uid || !gid) return;
+  updateDoc(doc(db, 'grupos', gid, 'membros', eu.uid), { canalVoz: cid || '', vistoEm: serverTimestamp() }).catch(() => {});
+}
+async function entrarNoCanalDeVoz(cid){
+  const c = grupo.canais.get(cid); if (!c || !c.link) return;
+  if (call.grupo === grupo.gid && call.canal === cid && call.estado !== 'nenhuma') { recado('Você já está nesse canal.', ''); return; }
+  const g = grupos.get(grupo.gid);
+  const gid = grupo.gid;
+  if (call.estado !== 'nenhuma') {
+    // troca de call: a anterior fecha por dentro do app (motivo 'trocou'); os convites dela param
+    const antigos = call.extras.slice();
+    entrarEmEstado('nenhuma');
+    antigos.forEach((r) => pararMeuConvite(r));
+  }
+  entrarEmEstado('conectando', '#' + c.nome, 'canal');
+  call.link = c.link; call.grupo = gid; call.canal = cid; call.grupoNome = g ? g.nome : ''; call.canalNome = c.nome;
+  $('conectando-txt').textContent = 'Entrando em 🔊 ' + c.nome + '…';
+  pintarCall(); pintarGrupo();
+  mandarRectDoPalco();
+  const ok = await ponte.entrarComLink(c.link, eu.nick, '#' + c.nome);
+  if (!ok) { if (call.estado !== 'nenhuma') entrarEmEstado('nenhuma'); recado('Não consegui entrar no canal.', 'mal'); return; }
+  marcarCanalVoz(gid, cid);
+}
 
 /* =====================================================================
  * O PALCO: avisa o app onde a call se encaixa
@@ -1461,4 +1872,5 @@ ponte.versao().then((v) => {
 })();
 
 // pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
-window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall };
+window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall, grupos, grupo, criarGrupo, entrarPorCodigo, abrirGrupo, fecharGrupo, convidarParaGrupo, entrarNoCanalDeVoz, apagarGrupo, sairDoGrupo, pintarGrupo, pintarTrilho,
+  expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)) };

@@ -1,15 +1,23 @@
-// Regras do Firestore do projeto "bigas-voice" (Firebase).
+// Regras do Firestore do projeto "bigas-voice" (Firebase). VERSÃO 4 (grupos).
 // Cole isto em: Firebase Console › Firestore Database › Regras › Publicar.
 // É ISTO que protege os dados — a chave dentro do home.js não é segredo.
 //
 // usuarios/{uid}                nick, nickBusca, ultimoVisto, emChamada, jogando
 // usuarios/{uid}/amigos/{outro} amizade ACEITA (cada lado guarda o seu)
 // usuarios/{uid}/bloqueados/…   quem eu bloqueei (só eu vejo)
+// usuarios/{uid}/grupos/{gid}   índice pessoal: de quais grupos eu faço parte
 // pedidos/{id}                  pedido de amizade: de, deNick, para, paraNick,
 //                               estado: pendente → aceito | recusado | concluido
+//                               (ou 'desfeito' = te tirei da lista; ou 'grupo' =
+//                               convite pra um grupo, com gid/gnome/codigo)
 // convites/{id}                 chamada tocando: de, deNick, para, paraNick, link,
 //                               estado: chamando → aceita | recusada | encerrada | semResposta
 // conversas/{a_b}/mensagens/…   chat entre dois amigos (a_b = os dois uids em ordem)
+// grupos/{gid}                  nome, dono, donoNick, codigo, cor, criadoEm
+// grupos/{gid}/membros/{uid}    nick, papel (dono|membro), entrouEm, canalVoz, vistoEm
+// grupos/{gid}/canais/{cid}     nome, tipo (texto|voz), ordem, link (voz)
+// grupos/{gid}/canais/{cid}/mensagens/…  de, deNick, texto, quando
+// codigosDeGrupo/{codigo}       gid, nome — pra entrar num grupo pelo código
 
 rules_version = '2';
 service cloud.firestore {
@@ -24,6 +32,15 @@ service cloud.firestore {
     function meBloqueou(outro) {
       return exists(/databases/$(database)/documents/usuarios/$(outro)/bloqueados/$(eu()));
     }
+    function souMembro(gid) {
+      return exists(/databases/$(database)/documents/grupos/$(gid)/membros/$(eu()));
+    }
+    function souDono(gid) {
+      return get(/databases/$(database)/documents/grupos/$(gid)).data.dono == eu();
+    }
+    function codigoDoGrupo(gid) {
+      return get(/databases/$(database)/documents/grupos/$(gid)).data.codigo;
+    }
 
     match /usuarios/{uid} {
       allow read: if logado();
@@ -35,16 +52,20 @@ service cloud.firestore {
       match /bloqueados/{outroId} {
         allow read, write: if logado() && eu() == uid;
       }
+      match /grupos/{gid} {
+        allow read, write: if logado() && eu() == uid;
+      }
     }
 
     match /pedidos/{pedidoId} {
       // 'pendente' = quero ser seu amigo; 'desfeito' = te tirei da lista
-      // (o outro lado apaga o dele ao receber)
+      // (o outro lado apaga o dele ao receber); 'grupo' = te convido pro grupo
       allow create: if logado()
         && request.resource.data.de == eu()
         && request.resource.data.para != eu()
-        && request.resource.data.estado in ['pendente', 'desfeito']
-        && !meBloqueou(request.resource.data.para);
+        && request.resource.data.estado in ['pendente', 'desfeito', 'grupo']
+        && !meBloqueou(request.resource.data.para)
+        && (request.resource.data.estado != 'grupo' || souMembro(request.resource.data.gid));
       allow read, update: if logado()
         && (resource.data.de == eu() || resource.data.para == eu());
     }
@@ -75,6 +96,47 @@ service cloud.firestore {
         && request.resource.data.texto is string
         && request.resource.data.texto.size() > 0
         && request.resource.data.texto.size() <= 2000;
+    }
+
+    // ---------------- GRUPOS ("servidores") ----------------
+    match /codigosDeGrupo/{codigo} {
+      // qualquer um logado lê UM código (get) — nunca a lista; quem cria é o dono do grupo
+      allow get: if logado();
+      allow create: if logado() && souDono(request.resource.data.gid);
+      allow delete: if logado() && souDono(resource.data.gid);
+    }
+
+    match /grupos/{gid} {
+      allow read: if logado() && souMembro(gid);
+      allow create: if logado() && request.resource.data.dono == eu()
+        && request.resource.data.nome is string
+        && request.resource.data.nome.size() >= 2 && request.resource.data.nome.size() <= 30;
+      allow update, delete: if logado() && souDono(gid);
+
+      match /membros/{uid} {
+        allow read: if logado() && souMembro(gid);
+        // entra: você mesmo, com o código certo (ou o dono, criando o grupo)
+        allow create: if logado() && eu() == uid
+          && (souDono(gid) || request.resource.data.codigo == codigoDoGrupo(gid));
+        // canalVoz / vistoEm: só o próprio
+        allow update: if logado() && eu() == uid;
+        // sair (eu) ou expulsar (dono)
+        allow delete: if logado() && (eu() == uid || souDono(gid));
+      }
+
+      match /canais/{cid} {
+        allow read: if logado() && souMembro(gid);
+        allow create, update, delete: if logado() && souDono(gid);
+
+        match /mensagens/{mid} {
+          allow read: if logado() && souMembro(gid);
+          allow create: if logado() && souMembro(gid)
+            && request.resource.data.de == eu()
+            && request.resource.data.texto is string
+            && request.resource.data.texto.size() > 0
+            && request.resource.data.texto.size() <= 2000;
+        }
+      }
     }
   }
 }

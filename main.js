@@ -391,10 +391,16 @@ function vestirSite(wc){
       // os textos de estado do site falam em "link", "aba", "modo manual" —
       // aqui dentro nada disso existe. Traduz na saída, sem mexer no site.
       var outro = ${JSON.stringify(outroNick || '')} || 'seu amigo';
+      var canal = outro.charAt(0) === '#'; // canal de voz de um grupo: sala fixa, ninguém está sendo chamado
       var dizerOriginal = window.dizerSala;
       if (typeof dizerOriginal === 'function') {
         window.dizerSala = function(t){
-          t = String(t == null ? '' : t)
+          t = String(t == null ? '' : t);
+          if (canal) t = t
+            .replace('ninguém aqui ainda — pode deixar esta aba aberta', 'só você no canal por enquanto — quem entrar aparece aqui')
+            .replace('procurando quem já está na call…', 'entrando no canal ' + outro + '…')
+            .replace('entrando na sala…', 'entrando no canal ' + outro + '…');
+          else t = t
             .replace('esperando seu amigo abrir o link…', 'chamando ' + outro + '…')
             .replace('ninguém aqui ainda — pode deixar esta aba aberta', 'ainda procurando ' + outro + '…')
             .replace('procurando quem já está na call…', 'entrando na chamada de ' + outro + '…');
@@ -460,6 +466,13 @@ function vestirSite(wc){
         var ver = function(){ if (!ch.hidden && !avisado) { avisado = true; window.bigasApp.avisar('conectada'); } };
         new MutationObserver(ver).observe(ch, { attributes: true, attributeFilter: ['hidden'] });
         ver();
+        // canal de voz de grupo: estar na sala já é "estar no canal", mesmo sozinho
+        if (canal) {
+          var vs = setInterval(function(){
+            if (avisado) { clearInterval(vs); return; }
+            if (typeof sala !== 'undefined' && sala.ligada) { avisado = true; clearInterval(vs); window.bigasApp.avisar('conectada'); }
+          }, 500);
+        }
       }
       // enquanto transmite, conta pro app quantos quadros a captura entrega
       // (mediana que o próprio site mede) — o app cruza com a placa de vídeo
