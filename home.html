@@ -173,6 +173,11 @@
   .canal .tag{ color:var(--txt3); width:16px; text-align:center; flex-shrink:0 }
   .canal .nome{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .canal.nele{ color:var(--verde) }
+  .categoria{ font-size:11px; margin:10px 0 2px; padding:4px 8px; color:var(--txt3); text-transform:uppercase; letter-spacing:.06em; display:flex; align-items:center; gap:6px; cursor:default; border-radius:6px }
+  .categoria:hover{ color:var(--txt2) }
+  .categoria .mais{ margin-left:auto; color:var(--txt3); font-size:14px; line-height:1; width:18px; height:18px; border-radius:5px; display:none }
+  .categoria:hover .mais{ display:inline-flex; align-items:center; justify-content:center }
+  .categoria .mais:hover{ background:var(--sup3); color:var(--txt) }
   .canal .dentro{ display:flex; flex-direction:column; gap:2px; padding:2px 0 4px 30px }
   .canal .dentro .p{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--txt2) }
   .canal .dentro .p .avatar{ width:20px; height:20px; font-size:9px }
@@ -499,10 +504,8 @@
       </div>
 
       <div class="rolagem" id="rolagem-grupo" hidden>
-        <h2>Canais de texto <button class="link" id="btn-novo-canal-texto" type="button" hidden>+ canal</button></h2>
-        <div class="lista" id="canais-texto"></div>
-        <h2>Canais de voz <button class="link" id="btn-novo-canal-voz" type="button" hidden>+ canal</button></h2>
-        <div class="lista" id="canais-voz"></div>
+        <div id="canais"></div>
+        <div class="lista"><button class="link" id="btn-novo-canal" type="button" hidden style="padding:6px 8px">+ novo canal ou categoria</button></div>
         <h2 id="titulo-membros">Membros</h2>
         <div class="lista" id="membros"></div>
       </div>
@@ -711,7 +714,9 @@
       <div id="pag-criar">
         <label for="grupo-novo-nome">Nome do grupo</label>
         <input id="grupo-novo-nome" type="text" maxlength="30" placeholder="ex: Os Bigas" autocomplete="off" spellcheck="false">
-        <small>Vem com um canal de texto (#geral) e um canal de voz (🔊 Geral). Você pode criar mais depois.</small>
+        <label for="grupo-estrutura" style="margin-top:6px">Canais <small>(opcional — pra recriar um servidor inteiro de uma vez)</small></label>
+        <textarea id="grupo-estrutura" rows="7" spellcheck="false" placeholder="GERAL TEXT&#10;# geral&#10;# comand-music&#10;SO NAS CALL&#10;🔊 GERAL&#10;🔊 GERAL 2&#10;🔊 AFK" style="resize:vertical;font:12.5px/1.5 ui-monospace,Consolas,monospace"></textarea>
+        <small>Uma linha por canal: <b>#</b> nome = texto, <b>🔊</b> nome (ou "voz nome") = voz. Linha sem símbolo = categoria (os canais abaixo entram nela). Vazio = #geral e 🔊 Geral.</small>
         <p class="erro" id="erro-grupo"></p>
         <div class="botoes"><button class="b-cinza" type="button" id="btn-grupo-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-grupo-criar">Criar</button></div>
       </div>
@@ -737,7 +742,11 @@
   <div class="modal" id="modal-canal">
     <div class="caixa">
       <b id="canal-titulo">Novo canal</b>
+      <div class="abas"><button type="button" id="canal-tipo-texto" class="ativa"># Texto</button><button type="button" id="canal-tipo-voz">🔊 Voz</button></div>
       <input id="canal-nome" type="text" maxlength="24" placeholder="nome do canal" autocomplete="off" spellcheck="false">
+      <label for="canal-categoria">Categoria <small>(opcional — nova ou uma que já existe)</small></label>
+      <input id="canal-categoria" type="text" maxlength="24" placeholder="ex: SO NAS CALL" autocomplete="off" spellcheck="false" list="categorias-existentes">
+      <datalist id="categorias-existentes"></datalist>
       <p class="erro" id="erro-canal"></p>
       <div class="botoes"><button class="b-cinza" type="button" id="btn-canal-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-canal-criar">Criar</button></div>
     </div>

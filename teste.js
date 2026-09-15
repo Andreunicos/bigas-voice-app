@@ -571,13 +571,20 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
   {
     const nomeG = 'Grupo teste ' + String(Date.now()).slice(-5);
     let gid = null;
-    try { gid = await jsA(`window.__bigasEstado.criarGrupo(${JSON.stringify(nomeG)})`); }
+    // a estrutura de um servidor do Discord, colada como texto (categorias + # texto + 🔊 voz)
+    const estrutura = 'GERAL TEXT' + String.fromCharCode(10) + '# geral' + String.fromCharCode(10) + '# comand-music' + String.fromCharCode(10) + 'SO NAS CALL' + String.fromCharCode(10) + '🔊 GERAL' + String.fromCharCode(10) + '🔊 GERAL 2' + String.fromCharCode(10) + '🔊 AFK' + String.fromCharCode(10) + 'Fortnite' + String.fromCharCode(10) + 'voz Fortnosos';
+    ok('GRUPOS: a estrutura colada vira 6 canais em 3 categorias', (await jsA(`JSON.stringify(window.__bigasEstado.lerEstrutura(${JSON.stringify(estrutura)}).map(c => c.categoria + '/' + c.tipo + '/' + c.nome))`)) === JSON.stringify(['GERAL TEXT/texto/geral','GERAL TEXT/texto/comand-music','SO NAS CALL/voz/GERAL','SO NAS CALL/voz/GERAL 2','SO NAS CALL/voz/AFK','Fortnite/voz/Fortnosos']));
+    try { gid = await jsA(`window.__bigasEstado.criarGrupo(${JSON.stringify(nomeG)}, ${JSON.stringify(estrutura)})`); }
     catch (e) { ok('GRUPOS: criar grupo (precisa das REGRAS v4 publicadas no console do Firebase)', false, String(e && e.message).slice(0, 120)); }
     if (gid) {
       ok('GRUPOS: A criou o grupo', true, gid);
       await jsA(`window.__bigasEstado.abrirGrupo(${JSON.stringify(gid)}); true`);
-      const abriu = await esperarAte(() => jsA(`(function(){ var E = window.__bigasEstado; return !document.getElementById('cab-grupo').hidden && E.grupo.canais.size === 2 && document.querySelectorAll('#trilho-grupos .grupo-ic').length >= 1 ? document.getElementById('grupo-nome').textContent : null; })()`), 10000, 300);
-      ok('GRUPOS: o grupo abre com #geral e 🔊 Geral e aparece no trilho', abriu === nomeG, abriu);
+      const abriu = await esperarAte(() => jsA(`(function(){ var E = window.__bigasEstado; return !document.getElementById('cab-grupo').hidden && E.grupo.canais.size === 6 && document.querySelectorAll('#trilho-grupos .grupo-ic').length >= 1 ? document.getElementById('grupo-nome').textContent : null; })()`), 10000, 300);
+      ok('GRUPOS: o grupo abre com os 6 canais e aparece no trilho', abriu === nomeG, abriu);
+      const cats = await jsA(`[...document.querySelectorAll('#canais .categoria span:first-child')].map(e => e.textContent).join('|')`);
+      ok('GRUPOS: as categorias aparecem na ordem colada (GERAL TEXT, SO NAS CALL, Fortnite)', cats === 'GERAL TEXT|SO NAS CALL|Fortnite', cats);
+      const ordemCanais = await jsA(`[...document.querySelectorAll('#canais .canal .nome')].map(e => e.textContent).join('|')`);
+      ok('GRUPOS: os canais ficam dentro das categorias, na ordem', ordemCanais === 'geral|comand-music|GERAL|GERAL 2|AFK|Fortnosos', ordemCanais);
       const codigo = await esperarAte(() => jsA(`(function(){ var g = window.__bigasEstado.grupos.get(${JSON.stringify(gid)}); return g && g.codigo ? g.codigo : null; })()`), 8000, 300);
       ok('GRUPOS: o grupo tem código de entrada', !!codigo && /^[A-Z0-9]{6}$/.test(codigo), codigo);
       // B entra pelo código
@@ -591,24 +598,24 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
       ok('GRUPOS: B vê quem é o dono', /dono/.test(donoB || ''), donoB);
       // chat no #geral
       const textoG = 'no grupo ' + Date.now();
-      await jsA(`(function(){ var c = [...document.querySelectorAll('#canais-texto .canal')].find(e => /geral/.test(e.textContent)); if (c) c.click(); })(); true`);
+      await jsA(`(function(){ var c = [...document.querySelectorAll('#canais .canal')].find(e => /^#geral$/.test(e.textContent)); if (c) c.click(); })(); true`);
       await esperarAte(() => jsA(`document.getElementById('sec-chat').classList.contains('mostra') && /geral/.test(document.getElementById('chat-nick').textContent) ? 'ok' : null`), 5000, 200);
       await jsA(`document.getElementById('chat-texto').value = ${JSON.stringify(textoG)}; document.getElementById('btn-enviar').click(); true`);
-      await jsB(`(function(){ var c = [...document.querySelectorAll('#canais-texto .canal')].find(e => /geral/.test(e.textContent)); if (c) c.click(); })(); true`);
+      await jsB(`(function(){ var c = [...document.querySelectorAll('#canais .canal')].find(e => /^#geral$/.test(e.textContent)); if (c) c.click(); })(); true`);
       const chegouG = await esperarAte(() => jsB(`(function(){ var m = [...document.querySelectorAll('#mensagens .msg')].find(e => e.textContent.includes(${JSON.stringify(textoG)})); return m ? (m.querySelector('.quem') || {}).textContent || 'sem nome' : null; })()`), 15000, 300);
       ok('GRUPOS: mensagem no #geral chega em B com o nome de quem escreveu', chegouG === 'teste_bigas_a', chegouG);
       await jsA(`document.getElementById('btn-fechar-chat').click(); true`);
       await jsB(`document.getElementById('btn-fechar-chat').click(); true`);
       // A entra no canal de voz (sala fixa do canal, sozinho): vira "conectado", B vê A dentro do canal
-      await jsA(`(function(){ var c = document.querySelector('#canais-voz .canal-voz'); if (c) c.click(); })(); true`);
+      await jsA(`(function(){ var c = document.querySelector('#canais .canal-voz'); if (c) c.click(); })(); true`);
       const noCanal = await esperarAte(() => jsA(`(function(){ var c = window.__bigasEstado.call; return c.estado === 'conectada' && c.grupo === ${JSON.stringify(gid)} ? document.getElementById('call-sub').textContent : null; })()`), 40000, 400);
       ok('GRUPOS: A entra no canal de voz e fica "conectado" mesmo sozinho', !!noCanal, noCanal);
-      const dentroB = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais-voz .dentro'); return d && /teste_bigas_a/.test(d.textContent) ? d.textContent : null; })()`), 15000, 400);
+      const dentroB = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais .dentro'); return d && /teste_bigas_a/.test(d.textContent) ? d.textContent : null; })()`), 15000, 400);
       ok('GRUPOS: B vê A dentro do canal de voz', !!dentroB, dentroB);
       const estadoView = janelaA.contentView.children[0] ? await janelaA.contentView.children[0].webContents.executeJavaScript(`document.getElementById('sala-txt').textContent`).catch(() => '') : 'sem view';
       ok('GRUPOS: o texto do site dentro do canal fala em canal, não em "chamando"', /canal/.test(estadoView) && !/chamando/.test(estadoView), estadoView);
       await jsA(`document.getElementById('btn-sair-call').click(); true`);
-      const saiu = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais-voz .dentro'); return !d || !/teste_bigas_a/.test(d.textContent) ? 'ok' : null; })()`), 15000, 400);
+      const saiu = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais .dentro'); return !d || !/teste_bigas_a/.test(d.textContent) ? 'ok' : null; })()`), 15000, 400);
       ok('GRUPOS: A sai do canal e some da lista de B', saiu === 'ok');
       // dono tira B; convida de volta por pedido; B aceita
       await jsA(`window.__bigasEstado.expulsar(${JSON.stringify(gid)}, ${JSON.stringify(uidB)})`);

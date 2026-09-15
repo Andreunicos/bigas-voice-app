@@ -1287,20 +1287,23 @@ function pintarGrupo(){
   const g = grupos.get(grupo.gid);
   $('grupo-nome').textContent = g ? g.nome : '…';
   const dono = souDono();
-  $('btn-novo-canal-texto').hidden = !dono; $('btn-novo-canal-voz').hidden = !dono;
+  $('btn-novo-canal').hidden = !dono;
   const canais = [...grupo.canais.values()].sort((a, b) => (a.ordem || 0) - (b.ordem || 0) || String(a.nome).localeCompare(String(b.nome)));
-  const ct = $('canais-texto'); ct.innerHTML = '';
-  canais.filter((c) => c.tipo === 'texto').forEach((c) => {
+  // categorias (como no Discord): a ordem é a do primeiro canal de cada uma; sem categoria fica no topo
+  const categorias = [];
+  canais.forEach((c) => { const k = String(c.categoria || ''); if (!categorias.includes(k)) categorias.push(k); });
+  categorias.sort((a, b) => (a === '') - (b === '') || 0);
+  const raiz = $('canais'); raiz.innerHTML = '';
+  const pintarTexto = (c, lista) => {
     const el = document.createElement('div'); el.className = 'canal' + (chat.grupo && chat.grupo.cid === c.id ? ' aberto' : '');
     const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = '#';
     const n = document.createElement('span'); n.className = 'nome'; n.textContent = c.nome;
     el.append(tag, n);
     el.onclick = () => abrirCanalTexto(c.id);
     el.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuCanal(c, ev.clientX, ev.clientY); };
-    ct.appendChild(el);
-  });
-  const cv = $('canais-voz'); cv.innerHTML = '';
-  canais.filter((c) => c.tipo === 'voz').forEach((c) => {
+    lista.appendChild(el);
+  };
+  const pintarVoz = (c, cv) => {
     const dentro = noCanal(c.id);
     const euDentro = call.grupo === grupo.gid && call.canal === c.id && call.estado !== 'nenhuma';
     const el = document.createElement('div'); el.className = 'canal canal-voz' + (euDentro ? ' nele' : '');
@@ -1323,7 +1326,25 @@ function pintarGrupo(){
     el.onclick = () => entrarNoCanalDeVoz(c.id);
     el.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuCanal(c, ev.clientX, ev.clientY); };
     cv.appendChild(el);
+  };
+  categorias.forEach((cat) => {
+    if (cat) {
+      const h = document.createElement('div'); h.className = 'categoria';
+      const t = document.createElement('span'); t.textContent = cat; h.appendChild(t);
+      if (dono) {
+        const mais = document.createElement('button'); mais.type = 'button'; mais.className = 'mais'; mais.textContent = '+'; mais.title = 'Novo canal em ' + cat;
+        mais.onclick = (ev) => { ev.stopPropagation(); abrirNovoCanal('texto', cat); };
+        h.appendChild(mais);
+        h.oncontextmenu = (ev) => { ev.preventDefault(); abrirMenuCategoria(cat, ev.clientX, ev.clientY); };
+      }
+      raiz.appendChild(h);
+    }
+    const lista = document.createElement('div'); lista.className = 'lista';
+    canais.filter((c) => String(c.categoria || '') === cat).forEach((c) => { if (c.tipo === 'voz') pintarVoz(c, lista); else pintarTexto(c, lista); });
+    raiz.appendChild(lista);
   });
+  const dl = $('categorias-existentes'); dl.innerHTML = '';
+  categorias.filter(Boolean).forEach((cat) => { const o = document.createElement('option'); o.value = cat; dl.appendChild(o); });
   const membros = [...grupo.membros.values()].map((m) => { const pr = grupo.presenca.get(m.uid); return { m, p: presencaDe({ presenca: pr ? pr.dados : null }) }; })
     .sort((x, y) => ((x.p === 'offline') - (y.p === 'offline')) || (x.m.papel === 'dono' ? -1 : 0) - (y.m.papel === 'dono' ? -1 : 0) || String(x.m.nick).localeCompare(String(y.m.nick)));
   $('titulo-membros').textContent = 'Membros — ' + membros.length;
@@ -1347,20 +1368,37 @@ function pintarGrupo(){
 /* ---- entrar / criar / código ---- */
 function abrirModal(id){ $(id).classList.add('mostra'); }
 function fecharModal(id){ $(id).classList.remove('mostra'); }
-$('btn-novo-grupo').onclick = () => { $('erro-grupo').textContent = ''; $('erro-codigo').textContent = ''; $('grupo-novo-nome').value = ''; $('grupo-codigo').value = ''; abrirModal('modal-grupo'); setTimeout(() => $('grupo-novo-nome').focus(), 50); };
+$('btn-novo-grupo').onclick = () => { $('erro-grupo').textContent = ''; $('erro-codigo').textContent = ''; $('grupo-novo-nome').value = ''; $('grupo-codigo').value = ''; $('grupo-estrutura').value = ''; abrirModal('modal-grupo'); setTimeout(() => $('grupo-novo-nome').focus(), 50); };
 $('aba-criar').onclick = () => { $('aba-criar').classList.add('ativa'); $('aba-entrar').classList.remove('ativa'); $('pag-criar').hidden = false; $('pag-entrar').hidden = true; $('grupo-novo-nome').focus(); };
 $('aba-entrar').onclick = () => { $('aba-entrar').classList.add('ativa'); $('aba-criar').classList.remove('ativa'); $('pag-entrar').hidden = false; $('pag-criar').hidden = true; $('grupo-codigo').focus(); };
 $('btn-grupo-cancelar').onclick = () => fecharModal('modal-grupo');
 $('btn-codigo-cancelar').onclick = () => fecharModal('modal-grupo');
 document.querySelectorAll('.modal').forEach((m) => { m.addEventListener('click', (ev) => { if (ev.target === m) m.classList.remove('mostra'); }); });
 
-async function criarGrupo(nome){
+// "estrutura" = o texto do campo Canais: "# nome" texto, "🔊 nome"/"voz nome" voz, o resto é categoria
+function lerEstrutura(texto){
+  const canais = []; let categoria = '';
+  String(texto || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).forEach((l) => {
+    let m;
+    if ((m = /^#\s*(.+)$/.exec(l))) canais.push({ nome: m[1].trim().slice(0, 24), tipo: 'texto', categoria });
+    else if ((m = /^(?:🔊|🔉|🔈|voz[:\s]|call[:\s])\s*(.+)$/i.exec(l))) canais.push({ nome: m[1].trim().slice(0, 24), tipo: 'voz', categoria });
+    else categoria = l.replace(/[▾▸⌄›:]+$/, '').trim().slice(0, 24);
+  });
+  return canais;
+}
+async function criarGrupo(nome, estrutura){
   const gref = doc(collection(db, 'grupos'));
   const codigo = codigoNovo();
   await setDoc(gref, { nome, dono: eu.uid, donoNick: eu.nick, codigo, criadoEm: serverTimestamp() });
   await setDoc(doc(db, 'grupos', gref.id, 'membros', eu.uid), { nick: eu.nick, papel: 'dono', entrouEm: serverTimestamp(), canalVoz: '', vistoEm: serverTimestamp() });
-  await setDoc(doc(db, 'grupos', gref.id, 'canais', 'geral'), { nome: 'geral', tipo: 'texto', ordem: 0, criadoEm: serverTimestamp() });
-  await setDoc(doc(db, 'grupos', gref.id, 'canais', 'voz'), { nome: 'Geral', tipo: 'voz', ordem: 0, link: linkDeCanal(), criadoEm: serverTimestamp() });
+  let lista = lerEstrutura(estrutura);
+  if (!lista.length) lista = [{ nome: 'geral', tipo: 'texto', categoria: '' }, { nome: 'Geral', tipo: 'voz', categoria: '' }];
+  let ordem = 0;
+  for (const c of lista) {
+    const dados = { nome: c.nome, tipo: c.tipo, categoria: c.categoria || '', ordem: ordem++, criadoEm: serverTimestamp() };
+    if (c.tipo === 'voz') dados.link = linkDeCanal();
+    await addDoc(collection(db, 'grupos', gref.id, 'canais'), dados);
+  }
   await setDoc(doc(db, 'codigosDeGrupo', codigo), { gid: gref.id, nome });
   await setDoc(doc(db, 'usuarios', eu.uid, 'grupos', gref.id), { nome, entrouEm: serverTimestamp() });
   return gref.id;
@@ -1378,7 +1416,7 @@ $('btn-grupo-criar').onclick = async () => {
   const nome = $('grupo-novo-nome').value.trim();
   if (nome.length < 2) { $('erro-grupo').textContent = 'Dá um nome com pelo menos 2 letras.'; return; }
   $('btn-grupo-criar').disabled = true;
-  try{ const gid = await criarGrupo(nome); fecharModal('modal-grupo'); recado('Grupo "' + nome + '" criado. Convida os amigos em ⋯.', 'bem'); setTimeout(() => abrirGrupo(gid), 300); }
+  try{ const gid = await criarGrupo(nome, $('grupo-estrutura').value); fecharModal('modal-grupo'); recado('Grupo "' + nome + '" criado. Convida os amigos em ⋯.', 'bem'); setTimeout(() => abrirGrupo(gid), 300); }
   catch(e){ console.error(e); $('erro-grupo').textContent = e && e.code === 'permission-denied' ? 'O servidor recusou (as regras de grupos não foram publicadas).' : 'Não consegui criar (' + ((e && e.code) || 'erro') + ').'; }
   finally{ $('btn-grupo-criar').disabled = false; }
 };
@@ -1399,6 +1437,7 @@ $('btn-menu-grupo').onclick = (ev) => {
   const m = $('menu-amigo'); m.innerHTML = '';
   const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
   item('👥 Convidar amigo', abrirConvidar);
+  if (souDono()) item('➕ Novo canal / categoria', () => abrirNovoCanal('texto', ''));
   item('🔑 Copiar código (' + (g.codigo || '…') + ')', async () => { try { await navigator.clipboard.writeText(g.codigo); recado('Código ' + g.codigo + ' copiado. Quem digitar em + › Entrar com código entra no grupo.', 'bem'); } catch { recado('Código do grupo: ' + g.codigo, ''); } });
   if (souDono()) {
     item('✏️ Renomear grupo', async () => { const n = prompt('Novo nome do grupo:', g.nome); if (!n || n.trim().length < 2) return; try { await updateDoc(doc(db, 'grupos', grupo.gid), { nome: n.trim().slice(0, 30) }); await setDoc(doc(db, 'usuarios', eu.uid, 'grupos', grupo.gid), { nome: n.trim().slice(0, 30) }, { merge: true }); } catch { recado('Não consegui renomear.', 'mal'); } });
@@ -1463,8 +1502,15 @@ async function convidarParaGrupo(uid, nick){
 
 /* ---- canais: criar / renomear / apagar (dono) ---- */
 let canalNovoTipo = 'texto';
-$('btn-novo-canal-texto').onclick = () => { canalNovoTipo = 'texto'; $('canal-titulo').textContent = 'Novo canal de texto'; $('canal-nome').value = ''; $('erro-canal').textContent = ''; abrirModal('modal-canal'); setTimeout(() => $('canal-nome').focus(), 50); };
-$('btn-novo-canal-voz').onclick = () => { canalNovoTipo = 'voz'; $('canal-titulo').textContent = 'Novo canal de voz'; $('canal-nome').value = ''; $('erro-canal').textContent = ''; abrirModal('modal-canal'); setTimeout(() => $('canal-nome').focus(), 50); };
+function pintarTipoCanal(){ $('canal-tipo-texto').classList.toggle('ativa', canalNovoTipo === 'texto'); $('canal-tipo-voz').classList.toggle('ativa', canalNovoTipo === 'voz'); }
+function abrirNovoCanal(tipo, categoria){
+  canalNovoTipo = tipo || 'texto'; pintarTipoCanal();
+  $('canal-titulo').textContent = 'Novo canal'; $('canal-nome').value = ''; $('canal-categoria').value = categoria || ''; $('erro-canal').textContent = '';
+  abrirModal('modal-canal'); setTimeout(() => $('canal-nome').focus(), 50);
+}
+$('btn-novo-canal').onclick = () => abrirNovoCanal('texto', '');
+$('canal-tipo-texto').onclick = () => { canalNovoTipo = 'texto'; pintarTipoCanal(); };
+$('canal-tipo-voz').onclick = () => { canalNovoTipo = 'voz'; pintarTipoCanal(); };
 $('btn-canal-cancelar').onclick = () => fecharModal('modal-canal');
 $('btn-canal-criar').onclick = async () => {
   const nome = $('canal-nome').value.trim().replace(/^#/, '');
@@ -1472,7 +1518,7 @@ $('btn-canal-criar').onclick = async () => {
   $('btn-canal-criar').disabled = true;
   try{
     const ordem = grupo.canais.size;
-    const dados = { nome: nome.slice(0, 24), tipo: canalNovoTipo, ordem, criadoEm: serverTimestamp() };
+    const dados = { nome: nome.slice(0, 24), tipo: canalNovoTipo, categoria: $('canal-categoria').value.trim().slice(0, 24), ordem, criadoEm: serverTimestamp() };
     if (canalNovoTipo === 'voz') dados.link = linkDeCanal();
     await addDoc(collection(db, 'grupos', grupo.gid, 'canais'), dados);
     fecharModal('modal-canal');
@@ -1485,7 +1531,35 @@ function abrirMenuCanal(c, x, y){
   const m = $('menu-amigo'); m.innerHTML = '';
   const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
   item('✏️ Renomear canal', async () => { const n = prompt('Novo nome do canal:', c.nome); if (!n || !n.trim()) return; try { await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { nome: n.trim().replace(/^#/, '').slice(0, 24) }); } catch { recado('Não consegui renomear.', 'mal'); } });
+  item('📁 Mover pra categoria…', async () => { const n = prompt('Categoria (vazio = nenhuma):', c.categoria || ''); if (n === null) return; try { await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { categoria: n.trim().slice(0, 24) }); } catch { recado('Não consegui mover.', 'mal'); } });
+  item('⬆ Subir', () => moverCanal(c, -1));
+  item('⬇ Descer', () => moverCanal(c, +1));
   item('🗑 Apagar canal', async () => { if (!confirm('Apagar o canal "' + c.nome + '"?')) return; if (call.grupo === grupo.gid && call.canal === c.id) sairDaCall(); try { await deleteDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id)); } catch { recado('Não consegui apagar.', 'mal'); } }, true);
+  m.classList.add('mostra');
+  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
+  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
+}
+// troca a ordem com o vizinho da mesma categoria
+async function moverCanal(c, direcao){
+  const irmaos = [...grupo.canais.values()].filter((x) => String(x.categoria || '') === String(c.categoria || '')).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+  const i = irmaos.findIndex((x) => x.id === c.id); const j = i + direcao;
+  if (i < 0 || j < 0 || j >= irmaos.length) return;
+  const a = irmaos[i], b = irmaos[j];
+  const oa = a.ordem || 0, ob = b.ordem || 0;
+  try{
+    await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', a.id), { ordem: oa === ob ? ob + direcao : ob });
+    await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', b.id), { ordem: oa === ob ? oa : oa });
+  }catch{ recado('Não consegui mover.', 'mal'); }
+}
+function abrirMenuCategoria(cat, x, y){
+  if (!souDono()) return;
+  const m = $('menu-amigo'); m.innerHTML = '';
+  const item = (rotulo, fn, perigo) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = rotulo; if (perigo) b.className = 'perigo'; b.onclick = () => { fecharMenuAmigo(); fn(); }; m.appendChild(b); };
+  const dela = () => [...grupo.canais.values()].filter((c) => String(c.categoria || '') === cat);
+  item('➕ Novo canal aqui', () => abrirNovoCanal('texto', cat));
+  item('✏️ Renomear categoria', async () => { const n = prompt('Novo nome da categoria:', cat); if (!n || !n.trim()) return; try { for (const c of dela()) await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { categoria: n.trim().slice(0, 24) }); } catch { recado('Não consegui renomear.', 'mal'); } });
+  item('🗑 Desfazer categoria (os canais ficam)', async () => { try { for (const c of dela()) await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { categoria: '' }); } catch { recado('Não consegui.', 'mal'); } }, true);
   m.classList.add('mostra');
   m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
   m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
@@ -1872,5 +1946,5 @@ ponte.versao().then((v) => {
 })();
 
 // pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
-window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall, grupos, grupo, criarGrupo, entrarPorCodigo, abrirGrupo, fecharGrupo, convidarParaGrupo, entrarNoCanalDeVoz, apagarGrupo, sairDoGrupo, pintarGrupo, pintarTrilho,
+window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall, grupos, grupo, criarGrupo, entrarPorCodigo, abrirGrupo, fecharGrupo, convidarParaGrupo, entrarNoCanalDeVoz, apagarGrupo, sairDoGrupo, pintarGrupo, pintarTrilho, lerEstrutura,
   expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)) };
