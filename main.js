@@ -83,6 +83,7 @@ let config = {
   sobrepor: true,           // "quem está falando" por cima do jogo (janelinha transparente, só com o jogo na frente)
   cantoSobreposicao: 'esq-cima', // esq-cima | dir-cima | esq-baixo | dir-baixo
   mostrarJogo: true,        // os amigos veem "Jogando PUBG" quando um jogo conhecido está aberto
+  sons: true,               // efeitos sonoros leves da casa (entrou/saiu, mensagem, mudo…)
 };
 function lerConfig(){
   try { Object.assign(config, JSON.parse(fs.readFileSync(ARQ_CONFIG(), 'utf8'))); } catch {}
@@ -1431,7 +1432,7 @@ function ligarChamadas(){
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
       'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu', 'nitidezExtra',
-      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo', 'portao', 'portaoCorta'];
+      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo', 'portao', 'portaoCorta', 'sons'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();

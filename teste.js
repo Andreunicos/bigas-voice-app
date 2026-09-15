@@ -342,6 +342,27 @@ app.whenReady().then(async () => {
       const rede = await esperarAte(() => js('(function(){ var c = window.__bigasEstado.call; return typeof c.ping === "number" && c.religando === false ? "ok" : null; })()'), 6000, 300);
       ok('painel da call recebe ping/estado da rede', rede === 'ok');
     }
+    // EFEITOS SONOROS: renderiza cada efeito offline (mesma síntese da casa) e confere que é baixo e curto
+    {
+      const r = await js(`(async () => {
+        const E = window.__bigasEstado.EFEITOS; const saida = {};
+        for (const nome of Object.keys(E)) {
+          const ctx = new OfflineAudioContext(1, 48000, 48000);
+          const filtro = ctx.createBiquadFilter(); filtro.type = 'lowpass'; filtro.frequency.value = 2200; filtro.Q.value = 0.5;
+          const mestre = ctx.createGain(); mestre.gain.value = 0.8; filtro.connect(mestre).connect(ctx.destination);
+          E[nome].forEach(([f, ini, dur, g, tipo, fim]) => { const o = ctx.createOscillator(), ga = ctx.createGain(); o.type = tipo; o.frequency.setValueAtTime(f, ini + .01); if (fim) o.frequency.exponentialRampToValueAtTime(fim, ini + .01 + dur); ga.gain.setValueAtTime(0.0001, ini + .01); ga.gain.exponentialRampToValueAtTime(g, ini + .022); ga.gain.exponentialRampToValueAtTime(0.0001, ini + .01 + dur); o.connect(ga).connect(filtro); o.start(ini + .01); o.stop(ini + dur + .03); });
+          const b = (await ctx.startRendering()).getChannelData(0);
+          let pico = 0, fim = 0; for (let i = 0; i < b.length; i++) { const v = Math.abs(b[i]); if (v > pico) pico = v; if (v > 0.001) fim = i; }
+          saida[nome] = { picoDb: Math.round(20 * Math.log10(pico)), dur: Math.round(fim / 48) / 1000 };
+        }
+        return JSON.stringify(saida);
+      })()`);
+      const ef = JSON.parse(r);
+      const nomes = Object.keys(ef);
+      ok('efeitos sonoros: 12 efeitos, todos baixos (pico entre -32 e -14 dB) e curtos (< 0,5 s)', nomes.length === 12 && nomes.every((n) => ef[n].picoDb <= -14 && ef[n].picoDb >= -32 && ef[n].dur < 0.5), r.slice(0, 300));
+      ok('efeitos sonoros: chave "sons" nos ajustes e botão de ouvir', await js(`!!document.getElementById('chave-sons') && !!document.getElementById('btn-testar-sons')`));
+    }
+
     // SENSIBILIDADE: o ponto de corte do app vale no site, e abaixo dele o microfone FECHA de verdade
     {
       await js('window.bigasHome.configMudar({ portao: 23, portaoCorta: true })');

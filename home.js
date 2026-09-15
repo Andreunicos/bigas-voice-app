@@ -123,6 +123,7 @@ function tocarSom(tipo){
   pararSom();
   somTipo = tipo;
   try { audio = audio || new AudioContext(); if (audio.state === 'suspended') audio.resume(); } catch { return; }
+  ajustarSaidaDaCasa();
   const ciclo = () => {
     const t = audio.currentTime + 0.05;
     if (tipo === 'chamada') { nota(880, t, 0.16, 0.18); nota(1175, t + 0.2, 0.16, 0.18); nota(880, t + 0.5, 0.16, 0.18); nota(1175, t + 0.7, 0.22, 0.18); }
@@ -133,6 +134,50 @@ function tocarSom(tipo){
 }
 function pararSom(){
   clearInterval(somRelogio); somRelogio = null; somTipo = '';
+}
+
+/* =====================================================================
+ * EFEITOS SONOROS — leves, baixos, sintetizados (sem arquivo nenhum)
+ * ---------------------------------------------------------------------
+ * Senos e triângulos passando por um filtro grave, ataque curto, cauda
+ * suave. Nada de "bip" de computador: um toque de madeira, não de sirene.
+ * Tudo em -22 dB e para baixo; a chave "Sons do app" desliga tudo.
+ * =================================================================== */
+const EFEITOS = {
+  // [freq, início(s), duração(s), ganho, tipo, freqFinal(glide)]
+  entrou:   [[523, 0, .11, .07, 'triangle', 0], [784, .09, .16, .06, 'triangle', 0]],
+  saiu:     [[784, 0, .11, .06, 'triangle', 0], [523, .09, .18, .05, 'triangle', 0]],
+  conectou: [[392, 0, .09, .05, 'triangle', 0], [523, .08, .09, .06, 'triangle', 0], [784, .16, .2, .06, 'triangle', 0]],
+  encerrou: [[523, 0, .12, .05, 'triangle', 0], [392, .11, .22, .045, 'triangle', 0]],
+  mudo:     [[330, 0, .07, .06, 'sine', 250]],
+  desmudo:  [[330, 0, .07, .06, 'sine', 440]],
+  surdo:    [[262, 0, .1, .06, 'sine', 180]],
+  ouvir:    [[196, 0, .1, .06, 'sine', 300]],
+  mensagem: [[880, 0, .045, .05, 'sine', 0], [1320, .04, .06, .04, 'sine', 0]],
+  pedido:   [[659, 0, .08, .05, 'triangle', 0], [880, .07, .08, .05, 'triangle', 0], [1109, .14, .16, .045, 'triangle', 0]],
+  canal:    [[440, 0, .06, .05, 'triangle', 0], [660, .05, .12, .05, 'triangle', 0]],
+  toque:    [[988, 0, .035, .035, 'sine', 0]],
+};
+let ultimoEfeito = 0;
+function efeito(nome){
+  if (config.sons === false) return;
+  const partes = EFEITOS[nome]; if (!partes) return;
+  const agora = Date.now(); if (agora - ultimoEfeito < 60) return; ultimoEfeito = agora;
+  try{ audio = audio || new AudioContext(); if (audio.state === 'suspended') audio.resume(); }catch{ return; }
+  const t0 = audio.currentTime + 0.01;
+  const filtro = audio.createBiquadFilter(); filtro.type = 'lowpass'; filtro.frequency.value = 2200; filtro.Q.value = 0.5;
+  const mestre = audio.createGain(); mestre.gain.value = 0.8;
+  filtro.connect(mestre).connect(audio.destination);
+  partes.forEach(([f, ini, dur, g, tipo, fim]) => {
+    const o = audio.createOscillator(), ga = audio.createGain();
+    o.type = tipo; o.frequency.setValueAtTime(f, t0 + ini);
+    if (fim) o.frequency.exponentialRampToValueAtTime(fim, t0 + ini + dur);
+    ga.gain.setValueAtTime(0.0001, t0 + ini);
+    ga.gain.exponentialRampToValueAtTime(g, t0 + ini + 0.012);
+    ga.gain.exponentialRampToValueAtTime(0.0001, t0 + ini + dur);
+    o.connect(ga).connect(filtro);
+    o.start(t0 + ini); o.stop(t0 + ini + dur + 0.02);
+  });
 }
 
 /* =====================================================================
@@ -489,7 +534,7 @@ function ouvirPedidos(){
     snap.docs.forEach((d) => {
       const c = d.data();
       if (!antes.has(d.id) && (ms(c.quando) || Date.now()) > carregadoEm && !bloqueados.has(c.de))
-        ponte.notificar('Pedido de amizade', c.deNick + ' quer ser seu amigo');
+        { ponte.notificar('Pedido de amizade', c.deNick + ' quer ser seu amigo'); efeito('pedido'); }
     });
   }, (e) => console.error(e)));
 
@@ -501,7 +546,7 @@ function ouvirPedidos(){
     snap.docs.forEach((d) => {
       const c = d.data();
       if (!antes.has(d.id) && (ms(c.quando) || Date.now()) > carregadoEm && !bloqueados.has(c.de))
-        ponte.notificar('Convite pra grupo', c.deNick + ' te convidou pro grupo ' + c.gnome);
+        { ponte.notificar('Convite pra grupo', c.deNick + ' te convidou pro grupo ' + c.gnome); efeito('pedido'); }
     });
   }, (e) => console.error(e)));
 
@@ -623,6 +668,7 @@ function ouvirAmigos(){
               if (t > carregadoEm && t > lidoAte(d.id) && a.avisou !== m.id) {
                 a.avisou = m.id;
                 ponte.notificar(a.nick, String(m.data().texto || '').slice(0, 120));
+                efeito('mensagem');
               }
             }
           } else a.naoLidas = 0;
@@ -775,6 +821,7 @@ function ligarMensagens(ref, aoLer){
       el.append(t, h); caixa.appendChild(el);
     });
     if (estavaEmbaixo || snap.docChanges().some((c) => c.type === 'added')) caixa.scrollTop = caixa.scrollHeight;
+    if (chat.grupo && snap.docChanges().some((c) => c.type === 'added' && c.doc.data().de !== eu.uid && (ms(c.doc.data().quando) || 0) > carregadoEm)) efeito('toque');
     if (aoLer) aoLer();
   }, (e) => { console.error(e); $('mensagens').innerHTML = '<p class="vazio">Não consegui abrir a conversa (' + (e.code || 'erro') + ').</p>'; });
   setTimeout(() => $('chat-texto').focus(), 50);
@@ -1005,6 +1052,17 @@ function entrarEmEstado(estado, com, papel){
   pintarAmigos();
 }
 
+// o AudioContext da casa (toque, efeitos) sai pelo aparelho escolhido nos Ajustes
+async function ajustarSaidaDaCasa(){
+  try{
+    if (!audio || typeof audio.setSinkId !== 'function') return;
+    const rotulo = config.saidaRotulo || '';
+    const ds = await navigator.mediaDevices.enumerateDevices();
+    const d = rotulo && ds.find((x) => x.kind === 'audiooutput' && x.label === rotulo);
+    await audio.setSinkId(d ? d.deviceId : '');
+  }catch{}
+}
+
 function pintarCall(){
   const p = $('painel-call');
   const palco = $('palco');
@@ -1059,7 +1117,14 @@ async function pararMeuConvite(ref){
 $('btn-sair-call').onclick = sairDaCall;
 $('btn-mic').onclick = () => ponte.mic();
 $('btn-surdo').onclick = () => ponte.surdo();
-ponte.aoMudarControles((d) => { call.mudo = !!d.mudo; call.surdo = !!d.surdo; pintarCall(); });
+ponte.aoMudarControles((d) => {
+  const mudo = !!d.mudo, surdo = !!d.surdo;
+  if (call.estado === 'conectada') {
+    if (surdo !== call.surdo) efeito(surdo ? 'surdo' : 'ouvir');
+    else if (mudo !== call.mudo) efeito(mudo ? 'mudo' : 'desmudo');
+  }
+  call.mudo = mudo; call.surdo = surdo; pintarCall();
+});
 // a placa de vídeo durante a call: mostra no painel e avisa quando está sufocada
 ponte.aoMedirPlaca((d) => {
   if (call.estado === 'nenhuma') return;
@@ -1083,7 +1148,16 @@ ponte.aoMudarRede((d) => {
   if (mudou && call.religando) recado('A conexão caiu — reconectando…', 'mal');
   else if (mudou && !call.religando && call.estado === 'conectada') recado('Reconectou.', 'bem');
 });
-ponte.aoMudarGente((g) => { call.gente = Array.isArray(g) ? g : []; if (call.estado !== 'nenhuma') pintarCall(); });
+ponte.aoMudarGente((g) => {
+  const antes = new Set((call.gente || []).filter((x) => !x.eu).map((x) => x.nome));
+  const agora = (Array.isArray(g) ? g : []).filter((x) => !x.eu).map((x) => x.nome);
+  if (call.estado === 'conectada' && call.gente && call.gente.length) {
+    if (agora.some((n) => !antes.has(n))) efeito('entrou');
+    else if ([...antes].some((n) => !agora.includes(n))) efeito('saiu');
+  }
+  call.gente = Array.isArray(g) ? g : [];
+  if (call.estado !== 'nenhuma') pintarCall();
+});
 ponte.aoMudarJogo((d) => {
   jogoAgora = (d && d.nome) || '';
   if (eu.uid) bater();
@@ -1097,9 +1171,11 @@ ponte.aoMudarCall(async (d) => {
   } else if (d.estado === 'conectada') {
     if (call.estado !== 'nenhuma') { if (!call.conectouEm) call.conectouEm = Date.now(); entrarEmEstado('conectada'); }
     pararSom();
+    efeito(call.grupo ? 'canal' : 'conectou');
     bater();
     if (call.grupo) marcarCanalVoz(call.grupo, call.canal);
   } else if (d.estado === 'encerrada') {
+    if (call.estado === 'conectada') efeito('encerrou');
     const refs = call.extras.slice();
     if (call.com && !call.grupo) anotarNoHistorico({ tipo: call.papel === 'atendendo' ? 'recebi' : 'fiz', nick: call.com, uid: call.comUid, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
     else if (call.grupo) anotarNoHistorico({ tipo: 'fiz', nick: '🔊 ' + call.canalNome + ' · ' + call.grupoNome, uid: null, duracao: call.conectouEm ? Date.now() - call.conectouEm : 0 });
@@ -1761,6 +1837,7 @@ function pintarAjustes(){
   const portao = Math.max(5, Math.min(50, Number(config.portao) || 12));
   $('portao-app').value = portao; $('portao-app-txt').textContent = String(portao); $('marca-portao').style.left = portao + '%';
   $('chave-portao').classList.toggle('on', config.portaoCorta !== false);
+  $('chave-sons').classList.toggle('on', config.sons !== false);
   $('chave-sobrepor').classList.toggle('on', config.sobrepor !== false);
   $('linha-canto').style.display = config.sobrepor !== false ? '' : 'none';
   $('sel-canto').value = config.cantoSobreposicao || 'esq-cima';
@@ -1810,7 +1887,9 @@ async function listarDispositivos(){
 navigator.mediaDevices.addEventListener('devicechange', () => { if ($('tela-ajustes').classList.contains('mostra')) listarDispositivos(); });
 
 $('sel-mic-app').onchange = async () => { await mudarConfig({ micRotulo: $('sel-mic-app').value }); ligarMedidor(true); };
-$('sel-saida-app').onchange = () => mudarConfig({ saidaRotulo: $('sel-saida-app').value });
+$('sel-saida-app').onchange = async () => { await mudarConfig({ saidaRotulo: $('sel-saida-app').value }); ajustarSaidaDaCasa(); };
+$('chave-sons').onclick = async () => { await mudarConfig({ sons: config.sons === false }); if (config.sons !== false) efeito('entrou'); };
+$('btn-testar-sons').onclick = () => { const seq = ['entrou', 'mensagem', 'mudo', 'desmudo', 'saiu']; seq.forEach((n, i) => setTimeout(() => { ultimoEfeito = 0; efeito(n); }, i * 450)); };
 
 /* medidor de nível do microfone (só enquanto a aba Voz está aberta) */
 async function ligarMedidor(reiniciar){
@@ -2039,4 +2118,4 @@ ponte.versao().then((v) => {
 
 // pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
 window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall, grupos, grupo, criarGrupo, entrarPorCodigo, abrirGrupo, fecharGrupo, convidarParaGrupo, entrarNoCanalDeVoz, apagarGrupo, sairDoGrupo, pintarGrupo, pintarTrilho, lerEstrutura,
-  expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)), guardarNoCofre, abrirCofre };
+  expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)), guardarNoCofre, abrirCofre, EFEITOS };
