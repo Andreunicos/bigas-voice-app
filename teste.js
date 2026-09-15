@@ -614,6 +614,9 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
       ok('GRUPOS: B vê A dentro do canal de voz', !!dentroB, dentroB);
       const estadoView = janelaA.contentView.children[0] ? await janelaA.contentView.children[0].webContents.executeJavaScript(`document.getElementById('sala-txt').textContent`).catch(() => '') : 'sem view';
       ok('GRUPOS: o texto do site dentro do canal fala em canal, não em "chamando"', /canal/.test(estadoView) && !/chamando/.test(estadoView), estadoView);
+      // sozinho no canal a tela da call já aparece, com o botão de transmitir liberado
+      const sozinho = janelaA.contentView.children[0] ? await esperarAte(() => janelaA.contentView.children[0].webContents.executeJavaScript(`(function(){ var b = document.getElementById('btn-tela'); return !document.getElementById('chamada').hidden && b && !b.disabled ? 'ok' : null; })()`).catch(() => null), 8000, 300) : null;
+      ok('GRUPOS: sozinho no canal já dá pra transmitir a tela (botão liberado)', sozinho === 'ok');
       await jsA(`document.getElementById('btn-sair-call').click(); true`);
       const saiu = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais .dentro'); return !d || !/teste_bigas_a/.test(d.textContent) ? 'ok' : null; })()`), 15000, 400);
       ok('GRUPOS: A sai do canal e some da lista de B', saiu === 'ok');

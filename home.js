@@ -647,11 +647,17 @@ function abrirMenuAmigo(uid, nick, x, y){
   item('Tirar da lista', () => tirarAmigo(uid, nick));
   item('🚫 Bloquear', () => bloquear(uid, nick), true);
   m.classList.add('mostra');
-  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
-  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  posicionarMenu(m, x, y);
   setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
 }
 function fecharMenuAmigo(){ $('menu-amigo').classList.remove('mostra'); }
+// a view da call é uma camada NATIVA por cima do palco: um menu da casa que
+// avance sobre o palco fica cortado. Então o menu nunca passa da borda do palco.
+function posicionarMenu(m, x, y){
+  const limite = (call.estado !== 'nenhuma') ? $('palco').getBoundingClientRect().left - 6 : innerWidth - 6;
+  m.style.left = Math.max(6, Math.min(limite - m.offsetWidth, x)) + 'px';
+  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+}
 window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') fecharMenuAmigo(); });
 
 /* =====================================================================
@@ -1366,14 +1372,16 @@ function pintarGrupo(){
 }
 
 /* ---- entrar / criar / código ---- */
-function abrirModal(id){ $(id).classList.add('mostra'); }
-function fecharModal(id){ $(id).classList.remove('mostra'); }
+// os modais cobrem a janela inteira — e a view da call ficaria por cima
+// deles no palco. Enquanto um modal está aberto, a view some (a call continua).
+function abrirModal(id){ $(id).classList.add('mostra'); ponte.viewVisivel(false); }
+function fecharModal(id){ $(id).classList.remove('mostra'); if (!document.querySelector('.modal.mostra') && !$('tela-ajustes').classList.contains('mostra')) ponte.viewVisivel(true); }
 $('btn-novo-grupo').onclick = () => { $('erro-grupo').textContent = ''; $('erro-codigo').textContent = ''; $('grupo-novo-nome').value = ''; $('grupo-codigo').value = ''; $('grupo-estrutura').value = ''; abrirModal('modal-grupo'); setTimeout(() => $('grupo-novo-nome').focus(), 50); };
 $('aba-criar').onclick = () => { $('aba-criar').classList.add('ativa'); $('aba-entrar').classList.remove('ativa'); $('pag-criar').hidden = false; $('pag-entrar').hidden = true; $('grupo-novo-nome').focus(); };
 $('aba-entrar').onclick = () => { $('aba-entrar').classList.add('ativa'); $('aba-criar').classList.remove('ativa'); $('pag-entrar').hidden = false; $('pag-criar').hidden = true; $('grupo-codigo').focus(); };
 $('btn-grupo-cancelar').onclick = () => fecharModal('modal-grupo');
 $('btn-codigo-cancelar').onclick = () => fecharModal('modal-grupo');
-document.querySelectorAll('.modal').forEach((m) => { m.addEventListener('click', (ev) => { if (ev.target === m) m.classList.remove('mostra'); }); });
+document.querySelectorAll('.modal').forEach((m) => { m.addEventListener('click', (ev) => { if (ev.target === m) fecharModal(m.id); }); });
 
 // "estrutura" = o texto do campo Canais: "# nome" texto, "🔊 nome"/"voz nome" voz, o resto é categoria
 function lerEstrutura(texto){
@@ -1445,8 +1453,7 @@ $('btn-menu-grupo').onclick = (ev) => {
   } else item('🚪 Sair do grupo', sairDoGrupo, true);
   m.classList.add('mostra');
   const r = ev.currentTarget.getBoundingClientRect();
-  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, r.left)) + 'px';
-  m.style.top = (r.bottom + 4) + 'px';
+  posicionarMenu(m, r.left, r.bottom + 4);
   setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
 };
 async function sairDoGrupo(){
@@ -1536,8 +1543,7 @@ function abrirMenuCanal(c, x, y){
   item('⬇ Descer', () => moverCanal(c, +1));
   item('🗑 Apagar canal', async () => { if (!confirm('Apagar o canal "' + c.nome + '"?')) return; if (call.grupo === grupo.gid && call.canal === c.id) sairDaCall(); try { await deleteDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id)); } catch { recado('Não consegui apagar.', 'mal'); } }, true);
   m.classList.add('mostra');
-  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
-  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  posicionarMenu(m, x, y);
   setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
 }
 // troca a ordem com o vizinho da mesma categoria
@@ -1561,8 +1567,7 @@ function abrirMenuCategoria(cat, x, y){
   item('✏️ Renomear categoria', async () => { const n = prompt('Novo nome da categoria:', cat); if (!n || !n.trim()) return; try { for (const c of dela()) await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { categoria: n.trim().slice(0, 24) }); } catch { recado('Não consegui renomear.', 'mal'); } });
   item('🗑 Desfazer categoria (os canais ficam)', async () => { try { for (const c of dela()) await updateDoc(doc(db, 'grupos', grupo.gid, 'canais', c.id), { categoria: '' }); } catch { recado('Não consegui.', 'mal'); } }, true);
   m.classList.add('mostra');
-  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
-  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  posicionarMenu(m, x, y);
   setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
 }
 function abrirMenuMembro(mb, x, y){
@@ -1574,8 +1579,7 @@ function abrirMenuMembro(mb, x, y){
   if (souDono()) item('🚫 Tirar do grupo', async () => { if (!confirm('Tirar ' + mb.nick + ' do grupo?')) return; try { await deleteDoc(doc(db, 'grupos', grupo.gid, 'membros', mb.uid)); } catch { recado('Não consegui tirar.', 'mal'); } }, true);
   if (!m.children.length) return;
   m.classList.add('mostra');
-  m.style.left = Math.max(6, Math.min(innerWidth - m.offsetWidth - 6, x)) + 'px';
-  m.style.top = Math.max(6, Math.min(innerHeight - m.offsetHeight - 6, y)) + 'px';
+  posicionarMenu(m, x, y);
   setTimeout(() => document.addEventListener('click', fecharMenuAmigo, { once: true }), 0);
 }
 

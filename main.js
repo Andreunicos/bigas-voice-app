@@ -470,7 +470,13 @@ function vestirSite(wc){
         if (canal) {
           var vs = setInterval(function(){
             if (avisado) { clearInterval(vs); return; }
-            if (typeof sala !== 'undefined' && sala.ligada) { avisado = true; clearInterval(vs); window.bigasApp.avisar('conectada'); }
+            if (typeof sala !== 'undefined' && sala.ligada) {
+              avisado = true; clearInterval(vs);
+              // mostra a tela da call já (com o botão de transmitir): num canal
+              // você pode transmitir sozinho, quem entrar depois entra vendo
+              try { if (typeof entrarNaChamada === 'function') entrarNaChamada(); } catch(e){}
+              window.bigasApp.avisar('conectada');
+            }
           }, 500);
         }
       }
