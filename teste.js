@@ -583,6 +583,15 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
     await jsA(`window.__bigasEstado.entrarEmEstado('nenhuma'); true`);
   }
 
+  // ===== COFRE DE LOGIN: e-mail cifrado com a senha; abre só com a senha certa =====
+  {
+    let r = null;
+    try { r = await jsA(`(async () => { const E = window.__bigasEstado; await E.guardarNoCofre(${JSON.stringify(NICK_A)}, 'teste.bigas.a@example.com', ${JSON.stringify(senha)}); const certo = await E.abrirCofre(${JSON.stringify(NICK_A)}, ${JSON.stringify(senha)}); let errado = 'abriu'; try { await E.abrirCofre(${JSON.stringify(NICK_A)}, 'senha-errada'); } catch (e) { errado = 'fechado'; } return JSON.stringify({ certo, errado }); })()`); } catch (e) { r = 'erro ' + (e && e.message); }
+    ok('COFRE: o e-mail cifrado abre com a senha certa e NÃO abre com a errada (regras v5)', r === '{"certo":"teste.bigas.a@example.com","errado":"fechado"}', String(r).slice(0, 160));
+    const dePublico = await jsB(`(async () => { try { return await window.__bigasEstado.abrirCofre(${JSON.stringify(NICK_A)}, 'x'); } catch (e) { return 'fechado'; } })()`);
+    ok('COFRE: outra pessoa lê o blob mas não o e-mail', dePublico === 'fechado', String(dePublico));
+  }
+
   // ===== GRUPOS ("servidores") =====
   {
     const nomeG = 'Grupo teste ' + String(Date.now()).slice(-5);

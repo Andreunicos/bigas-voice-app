@@ -1,4 +1,4 @@
-// Regras do Firestore do projeto "bigas-voice" (Firebase). VERSÃO 4 (grupos).
+// Regras do Firestore do projeto "bigas-voice" (Firebase). VERSÃO 5 (grupos + cofre de login).
 // Cole isto em: Firebase Console › Firestore Database › Regras › Publicar.
 // É ISTO que protege os dados — a chave dentro do home.js não é segredo.
 //
@@ -18,6 +18,7 @@
 // grupos/{gid}/canais/{cid}     nome, tipo (texto|voz), ordem, link (voz)
 // grupos/{gid}/canais/{cid}/mensagens/…  de, deNick, texto, quando
 // codigosDeGrupo/{codigo}       gid, nome — pra entrar num grupo pelo código
+// logins/{nick}                 uid, sal, iv, cifrado — e-mail de verdade cifrado com a senha
 
 rules_version = '2';
 service cloud.firestore {
@@ -96,6 +97,18 @@ service cloud.firestore {
         && request.resource.data.texto is string
         && request.resource.data.texto.size() > 0
         && request.resource.data.texto.size() <= 2000;
+    }
+
+    // ---------------- COFRE DE LOGIN ----------------
+    // logins/{nick}: o e-mail de verdade da conta, CIFRADO com a própria senha
+    // (PBKDF2 + AES-GCM no app). Qualquer um lê o blob pelo nick exato (é o que
+    // permite entrar pelo nick em qualquer PC); sem a senha, é lixo.
+    match /logins/{nick} {
+      allow get: if true;
+      allow create, update: if logado()
+        && request.resource.data.uid == eu()
+        && get(/databases/$(database)/documents/usuarios/$(eu())).data.nickBusca == nick;
+      allow delete: if logado() && resource.data.uid == eu();
     }
 
     // ---------------- GRUPOS ("servidores") ----------------

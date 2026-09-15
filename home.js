@@ -2,6 +2,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/fireba
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   onAuthStateChanged, signOut, sendPasswordResetEmail,
+  reauthenticateWithCredential, EmailAuthProvider, verifyBeforeUpdateEmail,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, query, where,
@@ -183,8 +184,10 @@ $('btn-criar').onclick = async () => {
       nick, nickBusca: nick.toLowerCase(), criadoEm: serverTimestamp(),
       ultimoVisto: serverTimestamp(), emChamada: false, temEmail: !!email,
     });
-    // neste PC, entrar pelo nick continua funcionando mesmo com e-mail
+    // neste PC, entrar pelo nick continua funcionando mesmo com e-mail — e
+    // nos outros também: o cofre (logins/{nick}) é escrito assim que o perfil carrega
     const mapa = lerLocal('nickParaEmail', {}); mapa[nick.toLowerCase()] = emailLogin; guardarLocal('nickParaEmail', mapa);
+    senhaDaSessao = senha;
   }catch(e){ $('erro-login').textContent = traduzirErro(e); }
   finally{ travarLogin(false); }
 };
@@ -200,10 +203,63 @@ $('btn-entrar').onclick = async () => {
     let emailLogin;
     if (digitado.includes('@')) emailLogin = digitado.toLowerCase();
     else emailLogin = lerLocal('nickParaEmail', {})[digitado.toLowerCase()] || nickParaEmail(digitado);
-    await signInWithEmailAndPassword(auth, emailLogin, senha);
+    try{
+      await signInWithEmailAndPassword(auth, emailLogin, senha);
+    }catch(e){
+      // nick de uma conta que trocou pro e-mail de verdade (noutro PC): o
+      // e-mail está no cofre, cifrado com a própria senha — só ela abre
+      if (digitado.includes('@') || !/invalid-credential|wrong-password|user-not-found/.test((e && e.code) || '')) throw e;
+      const doCofre = await abrirCofre(digitado, senha).catch(() => null);
+      if (!doCofre) throw e;
+      await signInWithEmailAndPassword(auth, doCofre, senha);
+      emailLogin = doCofre;
+    }
+    senhaDaSessao = senha;
+    if (!emailLogin.endsWith('@bigasvoice.app')) { const mapa = lerLocal('nickParaEmail', {}); mapa[digitado.toLowerCase()] = emailLogin; guardarLocal('nickParaEmail', mapa); }
   }catch(e){ $('erro-login').textContent = traduzirErro(e); }
   finally{ travarLogin(false); }
 };
+
+/* =====================================================================
+ * E-MAIL DE RECUPERAÇÃO NUMA CONTA QUE NASCEU SÓ COM NICK
+ * ---------------------------------------------------------------------
+ * A conta "só nick" tem e-mail falso (nick@bigasvoice.app): "esqueci a
+ * senha" não tem pra onde mandar. Cadastrar um e-mail de verdade troca o
+ * e-mail da conta no Firebase (depois que a pessoa confirma no link).
+ * Só que entrar pelo NICK precisa saber esse e-mail — em qualquer PC.
+ * Então o e-mail fica num cofre público (logins/{nick}) CIFRADO COM A
+ * PRÓPRIA SENHA: sem a senha ninguém lê o e-mail de ninguém.
+ * =================================================================== */
+let senhaDaSessao = '';
+const enc = new TextEncoder(), dec = new TextDecoder();
+function b64(bytes){ return btoa(String.fromCharCode(...new Uint8Array(bytes))); }
+function deB64(t){ return Uint8Array.from(atob(t), (c) => c.charCodeAt(0)); }
+async function chaveDoCofre(senha, sal){
+  const base = await crypto.subtle.importKey('raw', enc.encode(senha), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: sal, iterations: 150000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function guardarNoCofre(nick, email, senha){
+  const sal = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const k = await chaveDoCofre(senha, sal);
+  const cifrado = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, enc.encode(email.toLowerCase()));
+  await setDoc(doc(db, 'logins', nick.toLowerCase()), { uid: eu.uid, sal: b64(sal), iv: b64(iv), cifrado: b64(cifrado), quando: serverTimestamp() });
+}
+async function abrirCofre(nick, senha){
+  const d = await getDoc(doc(db, 'logins', nick.trim().toLowerCase()));
+  if (!d.exists()) return null;
+  const c = d.data();
+  const k = await chaveDoCofre(senha, deB64(c.sal));
+  const aberto = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: deB64(c.iv) }, k, deB64(c.cifrado));
+  return dec.decode(aberto);
+}
+async function cadastrarEmail(email, senha){
+  const u = auth.currentUser; if (!u) throw new Error('sem conta');
+  await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, senha));
+  await verifyBeforeUpdateEmail(u, email);          // o Firebase manda o link; o e-mail muda quando a pessoa confirma
+  await guardarNoCofre(eu.nick, email, senha);      // e o nick continua entrando em qualquer PC
+  await updateDoc(doc(db, 'usuarios', eu.uid), { temEmail: true }).catch(() => {});
+  const mapa = lerLocal('nickParaEmail', {}); mapa[eu.nick.toLowerCase()] = email.toLowerCase(); guardarLocal('nickParaEmail', mapa);
+}
 $('senha').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') (criando ? $('btn-criar') : $('btn-entrar')).click(); });
 $('nick').addEventListener('keydown', (ev) => { if (ev.key === 'Enter') $('senha').focus(); });
 
@@ -211,7 +267,7 @@ $('btn-esqueci').onclick = async () => {
   const digitado = $('nick').value.trim();
   $('erro-login').textContent = '';
   if (!digitado.includes('@')) {
-    $('erro-login').textContent = 'Recuperar senha só funciona com e-mail: digita o e-mail que você cadastrou no campo de cima. (Conta sem e-mail não tem como recuperar.)';
+    $('erro-login').textContent = 'Digita no campo de cima o e-mail que você cadastrou (em Ajustes › Conta). Conta que nunca cadastrou e-mail não tem como recuperar a senha.';
     return;
   }
   try{
@@ -282,10 +338,15 @@ onAuthStateChanged(auth, async (usuario) => {
   $('meu-av').textContent = iniciais(eu.nick);
   $('aj-nick').textContent = eu.nick;
   $('aj-email').textContent = eu.email ? 'e-mail de recuperação: ' + eu.email : 'sem e-mail de recuperação';
+  $('btn-email').textContent = eu.email ? 'Trocar e-mail' : 'Cadastrar e-mail';
 
   $('tela-login').style.display = 'none';
   $('tela-casa').style.display = 'flex';
   carregadoEm = Date.now();
+  if (eu.email && senhaDaSessao) {
+    const senha = senhaDaSessao; senhaDaSessao = '';
+    abrirCofre(eu.nick, senha).then((e) => { if (e !== eu.email) return guardarNoCofre(eu.nick, eu.email, senha); }).catch(() => guardarNoCofre(eu.nick, eu.email, senha).catch(() => {}));
+  }
   mandarRectDoPalco();
 
   ligarPresenca();
@@ -1657,6 +1718,25 @@ $('btn-fechar-ajustes').onclick = fecharAjustes;
 document.querySelectorAll('.aj-nav button[data-sec]').forEach((b) => { b.onclick = () => irParaSecao(b.dataset.sec); });
 window.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && $('tela-ajustes').classList.contains('mostra') && !capturandoTecla) fecharAjustes(); });
 $('btn-sair-conta-aj').onclick = () => { fecharAjustes(); $('btn-sair-conta').click(); };
+$('btn-email').onclick = () => { $('email-novo').value = ''; $('email-senha').value = ''; $('erro-email').textContent = ''; $('erro-email').style.color = ''; abrirModal('modal-email'); setTimeout(() => $('email-novo').focus(), 50); };
+$('btn-email-cancelar').onclick = () => fecharModal('modal-email');
+$('btn-email-salvar').onclick = async () => {
+  const email = $('email-novo').value.trim().toLowerCase(), senha = $('email-senha').value;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $('erro-email').textContent = 'Esse e-mail não parece certo.'; return; }
+  if (!senha) { $('erro-email').textContent = 'Digita a sua senha atual.'; return; }
+  $('btn-email-salvar').disabled = true;
+  try{
+    await cadastrarEmail(email, senha);
+    $('erro-email').style.color = '#8fe8b3';
+    $('erro-email').textContent = 'Mandei um link pra ' + email + '. Clica nele pra confirmar — depois disso "Esqueci a senha" funciona com esse e-mail. Entrar pelo nick continua igual.';
+    $('aj-email').textContent = 'e-mail de recuperação: ' + email + ' (confirma no link que chegou)';
+    setTimeout(() => fecharModal('modal-email'), 6000);
+  }catch(e){
+    console.error(e);
+    const c = (e && e.code) || '';
+    $('erro-email').textContent = /invalid-credential|wrong-password/.test(c) ? 'Senha errada.' : /email-already-in-use/.test(c) ? 'Esse e-mail já é de outra conta.' : /requires-recent-login/.test(c) ? 'Sai da conta, entra de novo e tenta.' : traduzirErro(e);
+  }finally{ $('btn-email-salvar').disabled = false; }
+};
 
 async function carregarConfig(){
   try { config = await ponte.configLer(); } catch { config = {}; }
@@ -1959,4 +2039,4 @@ ponte.versao().then((v) => {
 
 // pro teste mecânico (npm test) enxergar o estado da casa; nada de fora usa isto
 window.__bigasEstado = { call, amigos, eu, chat, bloqueados, historicoLer, tirarAmigo, bloquear, desbloquear, chamarParaCall, entrarEmEstado, pintarCall, grupos, grupo, criarGrupo, entrarPorCodigo, abrirGrupo, fecharGrupo, convidarParaGrupo, entrarNoCanalDeVoz, apagarGrupo, sairDoGrupo, pintarGrupo, pintarTrilho, lerEstrutura,
-  expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)) };
+  expulsar: (gid, uid) => deleteDoc(doc(db, 'grupos', gid, 'membros', uid)), guardarNoCofre, abrirCofre };

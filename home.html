@@ -604,8 +604,8 @@
 
       <section data-sec="conta" class="mostra">
         <h2>Conta</h2>
-        <div class="ajuste"><div class="txt"><b id="aj-nick"></b><small id="aj-email">sem e-mail de recuperação</small></div><button class="b-teste" id="btn-sair-conta-aj" type="button">Sair da conta</button></div>
-        <small style="color:var(--txt3)">Seu nick é como os amigos te acham. Sem e-mail cadastrado, a senha não tem como ser recuperada.</small>
+        <div class="ajuste"><div class="txt"><b id="aj-nick"></b><small id="aj-email">sem e-mail de recuperação</small></div><button class="b-teste" id="btn-email" type="button">Cadastrar e-mail</button><button class="b-teste" id="btn-sair-conta-aj" type="button">Sair da conta</button></div>
+        <small style="color:var(--txt3)">Seu nick é como os amigos te acham. Cadastra um e-mail (Gmail ou qualquer outro) pra poder recuperar a senha se esquecer — entrar pelo nick continua funcionando.</small>
         <div class="bloco">
           <h3>Alguma coisa não funciona?</h3>
           <div class="ajuste"><div class="txt"><b>Gerar diagnóstico</b><small>Salva na Área de Trabalho (e copia) um arquivo com versão, placa de vídeo, monitores, microfone, o que a chamada está fazendo e os últimos avisos. Manda pra quem cuida do app — resolve sem quarenta mensagens.</small></div><button class="b-teste" id="btn-diagnostico" type="button">📋 Gerar</button></div>
@@ -744,6 +744,19 @@
       <small>Só amigos da sua lista. Eles recebem um pedido e entram se quiserem.</small>
       <div class="lista" id="lista-convidar" style="max-height:300px;overflow-y:auto"></div>
       <div class="botoes"><button class="b-cinza" type="button" id="btn-convidar-fechar">Fechar</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="modal-email">
+    <div class="caixa">
+      <b>E-mail de recuperação</b>
+      <small>Se esquecer a senha, o link de troca vai pra esse e-mail. Você vai receber um e-mail de confirmação agora — a troca só vale depois de clicar nele.</small>
+      <label for="email-novo">E-mail</label>
+      <input id="email-novo" type="email" placeholder="voce@gmail.com" autocomplete="off" spellcheck="false">
+      <label for="email-senha">Sua senha atual</label>
+      <input id="email-senha" type="password" placeholder="pra confirmar que é você">
+      <p class="erro" id="erro-email"></p>
+      <div class="botoes"><button class="b-cinza" type="button" id="btn-email-cancelar">Cancelar</button><button class="b-azul" type="button" id="btn-email-salvar">Salvar</button></div>
     </div>
   </div>
 
