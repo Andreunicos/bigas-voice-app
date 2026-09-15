@@ -859,6 +859,7 @@ function segurarFalaNaCall(ligado){
  * ------------------------------------------------------------------ */
 let somDoApp = null;      // { proc, pid } enquanto captura
 let somDoAppPedido = 0;   // pid escolhido na tela de Transmitir, pra PRÓXIMA captura
+let somDoAppNome = '';    // o exe daquele pid (só pro diagnóstico)
 let ultimaFonte = '-';    // último "fonte:" que a view mandou (pra ver a transmissão PARAR)
 async function listarAppsComSom(){
   const exe = caminhoAjudante('somdoapp.exe');
@@ -891,7 +892,7 @@ function ligarSomDoApp(pid){
   try { proc = spawn(exe, [String(pid)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (e) { console.warn('somdoapp', e); return false; }
   const v = viewCall;
-  somDoApp = { proc, pid };
+  somDoApp = { proc, pid, desde: Date.now(), bytes: 0, nivel: 0, pico: 0 };
   let sobra = Buffer.alloc(0);
   proc.stdout.on('data', (b) => {
     if (viewCall !== v || !somDoApp || somDoApp.proc !== proc) return;
@@ -899,7 +900,15 @@ function ligarSomDoApp(pid){
     let todo = sobra.length ? Buffer.concat([sobra, b]) : b;
     const corte = todo.length - (todo.length % 8);
     sobra = todo.subarray(corte);
-    if (corte) { try { v.webContents.send('som:pcm', todo.subarray(0, corte)); } catch {} }
+    if (!corte) return;
+    // nível do que o Windows entrega (pro diagnóstico saber se o app escolhido está mudo)
+    try {
+      const f = new Float32Array(todo.buffer, todo.byteOffset, corte / 4);
+      let soma = 0, pico = 0; for (let i = 0; i < f.length; i += 4) { const x = Math.abs(f[i]); soma += x * x; if (x > pico) pico = x; }
+      const rms = Math.sqrt(soma / Math.max(1, f.length / 4));
+      somDoApp.nivel = somDoApp.nivel * 0.9 + rms * 0.1; if (pico > somDoApp.pico) somDoApp.pico = pico; somDoApp.bytes += corte;
+    } catch {}
+    try { v.webContents.send('som:pcm', todo.subarray(0, corte)); } catch {}
   });
   proc.stderr.on('data', (b) => { const t = String(b).trim(); if (t && t !== 'pronto') console.warn('somdoapp', t); });
   proc.on('exit', () => { if (somDoApp && somDoApp.proc === proc) { somDoApp = null; avisarHome('call:somDoApp', { estado: 'parou' }); } });
@@ -956,11 +965,16 @@ const SCRIPT_SOM_DO_APP = `
           s.ativo = true;
           return dest.stream.getAudioTracks()[0];
         };
+        s.recebidos = 0; s.ultimoPico = 0;
         window.bigasApp.aoReceberSom(function(bytes){
           if (!s.node || !bytes) return;
           try {
+            // o navegador põe AudioContext pra dormir de vez em quando — dormindo, a faixa vira silêncio
+            if (s.ctx && s.ctx.state === 'suspended') s.ctx.resume().catch(function(){});
             var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
             var f = new Float32Array(u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength - (u8.byteLength % 4)));
+            s.recebidos += f.length;
+            var p = 0; for (var i = 0; i < f.length; i += 8) { var x = Math.abs(f[i]); if (x > p) p = x; } s.ultimoPico = p;
             s.node.port.postMessage(f, [f.buffer]);
           } catch(e){}
         });
@@ -1209,13 +1223,13 @@ async function gerarDiagnostico(daCasa){
   dz('--- processos do app ---');
   try{ for (const m of app.getAppMetrics()) dz('  ' + m.type + ' ' + (m.name || '') + ' pid ' + m.pid + ' cpu ' + (m.cpu ? m.cpu.percentCPUUsage.toFixed(1) : '?') + '% mem ' + (m.memory ? Math.round(m.memory.workingSetSize / 1024) + ' MB' : '?')); }catch{}
   dz('placa agora: ' + (gpuAgora === null ? 'sem medição (fora de call)' : gpuAgora + '%') + ' · diag ' + JSON.stringify(diag));
-  dz('ptt global: ' + (ptt ? 'rodando (vk ' + ptt.vk + ')' : 'parado') + ' · som do app: ' + (somDoApp ? 'pid ' + somDoApp.pid : 'não'));
+  dz('ptt global: ' + (ptt ? 'rodando (vk ' + ptt.vk + ')' : 'parado') + ' · som do app: ' + (somDoApp ? somDoAppNome + ' pid ' + somDoApp.pid + ' há ' + Math.round((Date.now() - somDoApp.desde) / 1000) + ' s · ' + Math.round(somDoApp.bytes / 1024) + ' KB recebidos do Windows · nível agora ' + (somDoApp.nivel > 0 ? Math.round(20 * Math.log10(somDoApp.nivel)) + ' dB' : 'silêncio') + ' · pico ' + (somDoApp.pico > 0 ? Math.round(20 * Math.log10(somDoApp.pico)) + ' dB' : 'silêncio') : 'não'));
   dz('');
   dz('--- call ---');
   if (viewCall) {
     try{
       const v = await Promise.race([viewCall.webContents.executeJavaScript(`(async function(){
-        var r = { versao: typeof VERSAO !== 'undefined' ? VERSAO : '?', vestido: !!window.__bigasVestido, rnnoise: !!(window.__bigasRnnoise && window.__bigasRnnoise.ativo), somDoApp: !!(window.__bigasSomDoApp && window.__bigasSomDoApp.ativo) };
+        var sa = window.__bigasSomDoApp; var r = { versao: typeof VERSAO !== 'undefined' ? VERSAO : '?', vestido: !!window.__bigasVestido, rnnoise: !!(window.__bigasRnnoise && window.__bigasRnnoise.ativo), somDoApp: !!(sa && sa.ativo), somDoAppDetalhe: sa && sa.ativo ? { ctx: sa.ctx && sa.ctx.state, amostras: sa.recebidos, ultimoPico: sa.ultimoPico } : null };
         try {
           r.mudo = est.mudo; r.surdo = est.surdo; r.fala = cfg.fala; r.qualidade = cfg.qualidade; r.codec = cfg.codec; r.auto = cfg.auto; r.nitidez = cfg.nitidezExtra;
           r.mic = est.streamMic ? (est.streamMic.getAudioTracks()[0] || {}).label : null;
@@ -1519,6 +1533,7 @@ function ligarSeletorDeTela(){
           if(!escolhida){ callback(); return; }
           // som de UM app: a página pergunta (call:somDoApp) assim que a captura nascer
           somDoAppPedido = (escolha && typeof escolha === 'object' && escolha.som !== false && Number(escolha.somDe) > 0) ? Number(escolha.somDe) : 0;
+          somDoAppNome = somDoAppPedido ? ((apps.find((a) => a.pid === somDoAppPedido) || {}).exe || '?') : '';
           callback({ video: escolhida, audio: 'loopback' });
           // qualidade/fps e som escolhidos NA TELA DE TRANSMITIR: viram o
           // padrão e são aplicados no site assim que a captura existir
