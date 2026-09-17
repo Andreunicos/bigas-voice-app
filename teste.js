@@ -178,6 +178,13 @@ app.whenReady().then(async () => {
     // O seletor de tela do app abre (invisível) — o teste escolhe a 1ª tela.
     const fontes = await electron.desktopCapturer.getSources({ types: ['screen'] });
     const acharSeletor = () => electron.BaseWindow.getAllWindows().find((w) => w !== janela && /Escolha o que compartilhar|Transmitir — Bigas Voice/.test(w.getTitle())) || null;
+    // escolhe no seletor QUANDO ele abrir (com muita janela aberta ele demora; um emit cedo demais se perde)
+    const escolherQuandoAbrir = async (escolha) => {
+      await esperarAte(() => acharSeletor() ? null : 'sumiu', 8000, 100);
+      const sel = await esperarAte(acharSeletor, 20000, 100);
+      if (sel) await esperarAte(() => sel.webContents.executeJavaScript(`document.querySelectorAll('.fonte').length ? 'ok' : null`).catch(() => null), 8000, 150);
+      ipcMain.emit('seletor-de-tela:escolheu', {}, escolha);
+    };
     // enquanto o seletor de verdade está aberto (invisível), lê o que ele mostra:
     // nome dos monitores (modelo · resolução · principal) e a lista "som de onde"
     (async () => {
@@ -185,7 +192,7 @@ app.whenReady().then(async () => {
       const dom = sel ? await esperarAte(() => sel.webContents.executeJavaScript(`(function(){ var n=[...document.querySelectorAll('.fonte .nome span')].map(e=>e.textContent); if(!n.length) return null; return JSON.stringify({ nomes:n.slice(0,4), som:[...document.getElementById('sel-som').options].map(o=>o.textContent), somVisivel: !document.getElementById('linha-som-de').hidden }); })()`).catch(() => null), 5000, 200) : null;
       let d = null; try { d = JSON.parse(dom); } catch {}
       ok('tela de transmitir (de verdade): monitores com nome e resolução', !!(d && d.nomes.some((n) => /×\d+/.test(n))), d ? d.nomes.join(' | ') : 'sem DOM');
-      ok('tela de transmitir (de verdade): "som de onde" com a saída padrão + apps com som', !!(d && d.somVisivel && d.som.length >= 1 && /padrão/i.test(d.som[0])), d ? d.som.join(' | ').slice(0, 200) : 'sem DOM');
+      ok('tela de transmitir (de verdade): "som de onde" com o PC inteiro (sem Discord) + apps com som', !!(d && d.somVisivel && d.som.length >= 1 && /menos Discord/i.test(d.som[0])), d ? d.som.join(' | ').slice(0, 200) : 'sem DOM');
       ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id);
     })();
     const cap = await view.webContents.executeJavaScript(`
@@ -210,10 +217,10 @@ app.whenReady().then(async () => {
     ok('seletor de tela abriu (invisível)', !!seletor);
     if (seletor) seletor.close();
     ok('cancelar o seletor recusa a captura (erro, não trava)', /NotAllowedError|AbortError/.test(String(await cancelado)), String(await cancelado));
-    setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, fontes[0] && fontes[0].id), 1500);
+    escolherQuandoAbrir(fontes[0] && fontes[0].id);
     const denovo = await Promise.race([
       view.webContents.executeJavaScript(`navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(s => { s.getTracks().forEach(t => t.stop()); return 'ABRIU'; }, e => e.name)`, true),
-      espera(9000).then(() => 'TRAVOU'),
+      espera(30000).then(() => 'TRAVOU'),
     ]);
     ok('transmitir de novo depois de cancelar FUNCIONA (sem ouvinte vazado)', denovo === 'ABRIU', denovo);
 
@@ -261,7 +268,7 @@ app.whenReady().then(async () => {
       const tom = new RealBW({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
       await tom.loadURL('data:text/html,<script>const c=new AudioContext();const o=c.createOscillator();o.frequency.value=440;const g=c.createGain();g.gain.value=0.0001;o.connect(g).connect(c.destination);o.start();</script>');
       await espera(800);
-      setTimeout(() => ipcMain.emit('seletor-de-tela:escolheu', {}, { id: fontes[0] && fontes[0].id, qualidade: 'auto', som: true, somDe: process.pid }), 1500);
+      escolherQuandoAbrir({ id: fontes[0] && fontes[0].id, qualidade: 'auto', som: true, somDe: process.pid });
       const r = await Promise.race([view.webContents.executeJavaScript(`
         (async function(){
           try{
@@ -282,6 +289,52 @@ app.whenReady().then(async () => {
       ok('SOM DE UM APP: a faixa de áudio da captura passou a ser a nossa (worklet)', !!(sj && sj.ativo && /Destination/i.test(sj.label || '')), r);
       ok('SOM DE UM APP: o 440 Hz do processo escolhido chegou na faixa (loopback por processo)', !!(sj && Number.isFinite(sj.pico) && sj.pico > sj.mediana + 20), r);
       tom.destroy();
+    }
+
+    // SOM DO PC SEM DISCORD/BIGAS ("mix"): um processo DE FORA toca 440 Hz; o nosso app toca 660 Hz.
+    // O mix tem que trazer o de fora e deixar o nosso de fora (é assim que as vozes da call e o Discord ficam fora).
+    {
+      const { spawn } = require('child_process');
+      const pastaTom = path.join(__dirname, 'tom-de-fora');
+      fs.mkdirSync(pastaTom, { recursive: true });
+      fs.writeFileSync(path.join(pastaTom, 'package.json'), JSON.stringify({ name: 'tom', main: 'main.js' }));
+      fs.writeFileSync(path.join(pastaTom, 'pagina.html'), '<!doctype html><body><script>const c=new AudioContext();const o=c.createOscillator();o.frequency.value=440;const g=c.createGain();g.gain.value=0.001;o.connect(g).connect(c.destination);o.start();</script></body>');
+      fs.writeFileSync(path.join(pastaTom, 'main.js'), "const { app, BrowserWindow } = require('electron'); app.whenReady().then(() => { const w = new BrowserWindow({ show: false }); w.loadFile('pagina.html'); setTimeout(() => app.exit(0), 25000); });");
+      // o processo de fora NÃO pode ser electron.exe (o mix exclui o Bigas/electron de propósito): um WAV de 440 Hz a -60 dB tocado pelo PowerShell
+      const taxa = 48000, seg = 20, dados = Buffer.alloc(taxa * seg * 2);
+      for (let i = 0; i < taxa * seg; i++) dados.writeInt16LE(Math.round(Math.sin(2 * Math.PI * 440 * i / taxa) * 32767 * 0.001), i * 2);
+      const cab = Buffer.alloc(44);
+      cab.write('RIFF', 0); cab.writeUInt32LE(36 + dados.length, 4); cab.write('WAVE', 8); cab.write('fmt ', 12); cab.writeUInt32LE(16, 16); cab.writeUInt16LE(1, 20); cab.writeUInt16LE(1, 22); cab.writeUInt32LE(taxa, 24); cab.writeUInt32LE(taxa * 2, 28); cab.writeUInt16LE(2, 32); cab.writeUInt16LE(16, 34); cab.write('data', 36); cab.writeUInt32LE(dados.length, 40);
+      const wav = path.join(pastaTom, 'tom.wav'); fs.writeFileSync(wav, Buffer.concat([cab, dados]));
+      // e não pode ser FILHO do nosso processo (o mix exclui a nossa árvore inteira): nasce por um cmd que morre na hora
+      const deFora = spawn('cmd.exe', ['/c', 'start', '/b', '', 'powershell.exe', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', "(New-Object Media.SoundPlayer '" + wav.replace(/'/g, "''") + "').PlaySync()"], { stdio: 'ignore', windowsHide: true });
+      const meu = new RealBW({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
+      await meu.loadURL('data:text/html,<script>const c=new AudioContext();const o=c.createOscillator();o.frequency.value=660;const g=c.createGain();g.gain.value=0.001;o.connect(g).connect(c.destination);o.start();</script>');
+      await espera(3500);
+      escolherQuandoAbrir({ id: fontes[0] && fontes[0].id, qualidade: 'auto', som: true, somDe: 'pc' });
+      const r = await Promise.race([view.webContents.executeJavaScript(`
+        (async function(){
+          try{
+            const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false }, systemAudio: 'include' });
+            const t = s.getAudioTracks()[0]; if (!t) return JSON.stringify({ erro: 'sem faixa de áudio' });
+            const ctx = new AudioContext({ sampleRate: 48000 });
+            const src = ctx.createMediaStreamSource(new MediaStream([t])); const an = ctx.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0; src.connect(an);
+            await new Promise(r => setTimeout(r, 6000));
+            const f = new Float32Array(an.frequencyBinCount); an.getFloatFrequencyData(f);
+            const bin = (hz) => Math.round(hz / (48000 / 8192));
+            const pico = (hz) => Math.max(f[bin(hz) - 1], f[bin(hz)], f[bin(hz) + 1]);
+            const resto = [...f.slice(200, 600)].sort((a, b) => a - b); const mediana = resto[Math.floor(resto.length / 2)];
+            s.getTracks().forEach(x => x.stop()); ctx.close();
+            const n = (v) => Number.isFinite(v) ? Math.round(v) : -200;
+            return JSON.stringify({ label: t.label, deFora440: n(pico(440)), meu660: n(pico(660)), mediana: n(mediana) });
+          }catch(e){ return JSON.stringify({ erro: e.name + ': ' + e.message }); }
+        })()`, true), espera(20000).then(() => '{"erro":"demorou"}')]);
+      let mj = null; try { mj = JSON.parse(r); } catch {}
+      ok('MIX (tudo menos Discord/Bigas): o som de OUTRO programa chega', !!(mj && /Destination/i.test(mj.label || '') && mj.deFora440 > mj.mediana + 20), r);
+      ok('MIX: o som do PRÓPRIO Bigas Voice (as vozes da call) fica de fora', !!(mj && Number.isFinite(mj.meu660) && mj.meu660 < -120), r);   // -120 dB = nada (o de fora chega a -74)
+      meu.destroy();
+      try { deFora.kill(); } catch {}
+      require('child_process').execFile('taskkill.exe', ['/f', '/im', 'powershell.exe', '/fi', 'WINDOWTITLE eq tom'], { windowsHide: true }, () => {}); // (o PlaySync acaba sozinho em 20 s)
     }
 
     // PTT GLOBAL: escolher "segurar pra falar" liga o ajudante teclas.exe; voltar pra voz desliga
@@ -361,6 +414,19 @@ app.whenReady().then(async () => {
       const nomes = Object.keys(ef);
       ok('efeitos sonoros: 12 efeitos, todos baixos (pico entre -32 e -14 dB) e curtos (< 0,5 s)', nomes.length === 12 && nomes.every((n) => ef[n].picoDb <= -14 && ef[n].picoDb >= -32 && ef[n].dur < 0.5), r.slice(0, 300));
       ok('efeitos sonoros: chave "sons" nos ajustes e botão de ouvir', await js(`!!document.getElementById('chave-sons') && !!document.getElementById('btn-testar-sons')`));
+    }
+
+    // TELA CHEIA DO APP (o ⛶ do site não funciona dentro da view): foca o quadro, esconde o resto, janela em tela cheia
+    {
+      await view.webContents.executeJavaScript(`(function(){ if (typeof montarQuadro === 'function') montarQuadro('p-teste', 'tela de teste', true, null, null); window.__bigasCheia.alternar(document.getElementById('q-p-teste')); })(); true`).catch(() => {});
+      await espera(700);
+      const vb = view.getBounds(), jb = janela.getContentBounds();
+      const dentro = await view.webContents.executeJavaScript(`JSON.stringify({ classe: document.body.classList.contains('bigas-cheia'), foco: est.foco, controles: getComputedStyle(document.getElementById('controles')).display })`);
+      ok('tela cheia do app: janela em tela cheia, view cobrindo tudo, só o palco visível', janela.isFullScreen() && vb.width === jb.width && /"classe":true/.test(dentro) && /"foco":"p-teste"/.test(dentro) && /"controles":"none"/.test(dentro), 'janela=' + janela.isFullScreen() + ' view=' + JSON.stringify(vb) + ' ' + dentro);
+      await view.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+      await espera(700);
+      ok('ESC sai da tela cheia do app e a view volta pro palco', !janela.isFullScreen() && view.getBounds().width < jb.width && !(await view.webContents.executeJavaScript(`document.body.classList.contains('bigas-cheia')`)), JSON.stringify(view.getBounds()));
+      await view.webContents.executeJavaScript(`try { tirarQuadro('p-teste'); } catch (e) {} true`).catch(() => {});
     }
 
     // SENSIBILIDADE: o ponto de corte do app vale no site, e abaixo dele o microfone FECHA de verdade

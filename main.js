@@ -344,6 +344,12 @@ function vestirSite(wc){
     .sala-estado{ justify-content:center; font-size:15px !important; color:#a2aab8 !important }
     #erro{ margin:14px 24px 0 !important }
     #btn-sala-denovo{ max-width:260px; margin:14px auto 0 !important }
+    /* tela cheia do APP (não a do navegador, que não funciona dentro da view):
+       só o palco, com o quadro escolhido em foco; ESC ou o botão de novo sai */
+    body.bigas-cheia #chamada > :not(#palco){ display:none !important }
+    body.bigas-cheia #palco{ position:fixed !important; inset:0 !important; z-index:100 !important; background:#000 !important; padding:0 !important; margin:0 !important; border-radius:0 !important }
+    body.bigas-cheia #palco .quadro.em-foco{ width:100vw !important; height:100vh !important; max-width:none !important; max-height:none !important; border-radius:0 !important; border:0 !important }
+    body.bigas-cheia #palco .quadro.em-foco video{ width:100% !important; height:100% !important; object-fit:contain !important }
   `).catch(() => {});
 
   wc.executeJavaScript(`
@@ -381,7 +387,7 @@ function vestirSite(wc){
           // pra cá; a faixa que vai pros amigos é a nossa, não o loopback
           try {
             var pid = queriaAudio ? await window.bigasApp.somDoApp() : 0;
-            if (pid && window.__bigasSomDoApp) {
+            if (pid && window.__bigasSomDoApp) {   // -1 = tudo menos Discord/Bigas; >0 = só um app
               var faixa = await window.__bigasSomDoApp.ligar();
               stream.getAudioTracks().forEach(function(t){ stream.removeTrack(t); t.stop(); });
               stream.addTrack(faixa);
@@ -453,6 +459,44 @@ function vestirSite(wc){
 
       // as preferências do app (voz, mic, saída, volume, qualidade…) valem aqui
       ${scriptPreferencias()}
+
+      // TELA CHEIA DO APP: o requestFullscreen do site não funciona dentro da
+      // view (a promessa fica pendurada). Então o app faz a dele: foca o
+      // quadro (o site já sabe: alternarFoco), esconde o resto e pede pro
+      // main pôr a janela em tela cheia com a view cobrindo tudo.
+      window.__bigasCheia = { ligada: false, id: null };
+      window.__bigasCheia.alternar = function(q){
+        var C = window.__bigasCheia;
+        if (C.ligada) {
+          C.ligada = false; document.body.classList.remove('bigas-cheia');
+          if (C.focoAntes !== C.id && typeof alternarFoco === 'function') { try { est.foco = C.focoAntes; arrumarPalco(); } catch(e){} }
+          C.id = null;
+          window.bigasApp.avisar('cheia:0');
+          return;
+        }
+        if (!q) return;
+        var id = q.id.replace(/^q-/, '');
+        C.focoAntes = (typeof est !== 'undefined') ? est.foco : null;
+        C.ligada = true; C.id = id;
+        try { if (typeof est !== 'undefined') { est.foco = id; arrumarPalco(); } } catch(e){}
+        document.body.classList.add('bigas-cheia');
+        window.bigasApp.avisar('cheia:1');
+      };
+      document.addEventListener('click', function(ev){
+        var b = ev.target && ev.target.closest && ev.target.closest('.quadro-acoes button');
+        if (!b || !/⛶/.test(b.textContent || '')) return;
+        ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+        window.__bigasCheia.alternar(b.closest('.quadro'));
+      }, true);
+      document.addEventListener('dblclick', function(ev){
+        var q = ev.target && ev.target.closest && ev.target.closest('.quadro');
+        if (!q || (ev.target.closest && ev.target.closest('.quadro-acoes'))) return;
+        ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation();
+        window.__bigasCheia.alternar(q);
+      }, true);
+      document.addEventListener('keydown', function(ev){
+        if (ev.key === 'Escape' && window.__bigasCheia.ligada) { ev.preventDefault(); ev.stopPropagation(); window.__bigasCheia.alternar(null); }
+      }, true);
 
       // encerrar = voltar pra casa (o app fecha a call; o site não recarrega)
       document.addEventListener('click', function(ev){
@@ -868,6 +912,11 @@ function segurarFalaNaCall(ligado){
 let somDoApp = null;      // { proc, pid } enquanto captura
 let somDoAppPedido = 0;   // pid escolhido na tela de Transmitir, pra PRÓXIMA captura
 let somDoAppNome = '';    // o exe daquele pid (só pro diagnóstico)
+// programas que NUNCA entram na transmissão, em nenhum modo: as vozes deles voltariam pra call
+const SEM_SOM_DE = ['Discord.exe', 'DiscordPTB.exe', 'DiscordCanary.exe', 'DiscordDevelopment.exe', 'Bigas Voice.exe', 'electron.exe'];
+function argumentosDoMix(){
+  return ['mix', '--semexe', SEM_SOM_DE.join(','), '--semarvore', String(process.pid)];
+}
 let ultimaFonte = '-';    // último "fonte:" que a view mandou (pra ver a transmissão PARAR)
 async function listarAppsComSom(){
   const exe = caminhoAjudante('somdoapp.exe');
@@ -897,7 +946,8 @@ function ligarSomDoApp(pid){
   const exe = caminhoAjudante('somdoapp.exe');
   if (!exe || !viewCall || !pid) return false;
   let proc;
-  try { proc = spawn(exe, [String(pid)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
+  // pid -1 = "tudo, menos Discord e o próprio Bigas Voice" (o ajudante mistura um loopback por app)
+  try { proc = spawn(exe, pid === -1 ? argumentosDoMix() : [String(pid)], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }); }
   catch (e) { console.warn('somdoapp', e); return false; }
   const v = viewCall;
   somDoApp = { proc, pid, desde: Date.now(), bytes: 0, nivel: 0, pico: 0 };
@@ -919,8 +969,8 @@ function ligarSomDoApp(pid){
     } catch {}
     try { v.webContents.send('som:pcm', todo.subarray(0, corte)); } catch {}
   });
-  proc.stderr.on('data', (b) => { const t = String(b).trim(); if (t && t !== 'pronto') console.warn('somdoapp', t); });
-  proc.on('exit', () => { if (somDoApp && somDoApp.proc === proc) { somDoApp = null; avisarHome('call:somDoApp', { estado: 'parou' }); } });
+  proc.stderr.on('data', (b) => { const t = String(b).trim(); if (t && t !== 'pronto') console.log('somdoapp', t); });
+  proc.on('exit', () => { if (somDoApp && somDoApp.proc === proc) { somDoApp = null; if (pid !== -1) avisarHome('call:somDoApp', { estado: 'parou' }); } });
   console.log('som do app: capturando pid', pid);
   return true;
 }
@@ -936,26 +986,43 @@ const SCRIPT_SOM_DO_APP = `
         if (window.__bigasSomDoApp) return;
         var CODIGO_FILA = ${JSON.stringify(`
           class Fila extends AudioWorkletProcessor {
-            // fila com folga: alvo de 150 ms, corta só acima de 600 ms. O PCM chega pela
-            // página (que às vezes engasga 50–100 ms); com 40 ms de fila o som picotava.
-            constructor(){ super(); this.cap = 48000 * 2 * 2; this.ALVO = 48000 * 2 * 0.15; this.MAX = 48000 * 2 * 0.6; this.buf = new Float32Array(this.cap); this.ini = 0; this.n = 0; this.pronto = false;
-              this.port.onmessage = (e) => this.encher(e.data); }
+            // Fila com folga E relógio elástico. O PCM vem do relógio do Windows;
+            // a saída anda no relógio do AudioContext — nunca são iguais. Antes,
+            // quando a fila enchia, cortava 450 ms de uma vez: um "pipoco" a cada
+            // 30 s. Agora a leitura acelera/desacelera até 1% pra manter a fila no
+            // alvo (150 ms), com interpolação — sem corte, sem clique. Só corta se
+            // passar de 1,5 s (a página travou de verdade).
+            constructor(){
+              super();
+              this.cap = 48000 * 3; this.L = new Float32Array(this.cap); this.R = new Float32Array(this.cap);
+              this.ini = 0; this.n = 0; this.frac = 0; this.pronto = false;
+              this.ALVO = 48000 * 0.15; this.MAX = 48000 * 1.5;
+              this.entrou = 0; this.saiu = 0; this.taxa = 1;
+              this.port.onmessage = (e) => this.encher(e.data);
+            }
             encher(f){
-              if (this.n + f.length > this.cap) { var sobra = this.n + f.length - this.cap; this.ini = (this.ini + sobra) % this.cap; this.n -= sobra; }
-              var fim = (this.ini + this.n) % this.cap;
-              var primeira = Math.min(f.length, this.cap - fim);
-              this.buf.set(f.subarray(0, primeira), fim);
-              if (primeira < f.length) this.buf.set(f.subarray(primeira), 0);
-              this.n += f.length;
+              var quadros = f.length >> 1, cap = this.cap;
+              if (this.n + quadros > cap) { var sobra = this.n + quadros - cap; this.ini = (this.ini + sobra) % cap; this.n -= sobra; }
+              var pos = (this.ini + this.n) % cap;
+              for (var k = 0; k < quadros; k++) { this.L[pos] = f[2 * k]; this.R[pos] = f[2 * k + 1]; pos++; if (pos === cap) pos = 0; }
+              this.n += quadros; this.entrou += quadros;
             }
             process(inputs, outputs){
               var o = outputs[0], L = o[0], R = o[1] || o[0], cap = this.cap;
-              // atrasou demais: pula pro alvo — o som do jogo tem que andar perto da imagem
               if (this.n > this.MAX) { this.ini = (this.ini + (this.n - this.ALVO)) % cap; this.n = this.ALVO; }
-              if (!this.pronto && this.n >= this.ALVO) this.pronto = true;
+              if (!this.pronto) { if (this.n >= this.ALVO) this.pronto = true; else { for (var z = 0; z < L.length; z++) { L[z] = 0; R[z] = 0; } return true; } }
+              // quanto a fila está fora do alvo → quanto acelerar (até ±1%), suavizado
+              var erro = (this.n - this.ALVO) / this.ALVO;
+              var alvoTaxa = 1 + Math.max(-0.01, Math.min(0.01, erro * 0.02));
+              this.taxa += (alvoTaxa - this.taxa) * 0.05;
               for (var i = 0; i < L.length; i++) {
-                if (this.pronto && this.n >= 2) { L[i] = this.buf[this.ini]; R[i] = this.buf[(this.ini + 1) % cap]; this.ini = (this.ini + 2) % cap; this.n -= 2; }
-                else { L[i] = 0; R[i] = 0; if (this.n < 2) this.pronto = false; }
+                if (this.n < 2) { L[i] = 0; R[i] = 0; this.pronto = false; continue; }
+                var a = this.ini, b = a + 1; if (b === cap) b = 0;
+                var t = this.frac;
+                L[i] = this.L[a] + (this.L[b] - this.L[a]) * t;
+                R[i] = this.R[a] + (this.R[b] - this.R[a]) * t;
+                this.frac += this.taxa;
+                while (this.frac >= 1) { this.frac -= 1; this.ini = this.ini + 1 === cap ? 0 : this.ini + 1; this.n--; this.saiu++; }
               }
               return true;
             }
@@ -1376,6 +1443,11 @@ function ligarChamadas(){
     else if (o.startsWith('fonte:')) { diagnosticarCaptura(o.slice(6)); if (somDoApp && ultimaFonte !== '-') desligarSomDoApp(); } // PAROU de transmitir: solta o som do app
     if (o.startsWith('fonte:')) ultimaFonte = o.slice(6);
     else if (o.startsWith('controles:')) avisarHome('call:controles', { mudo: o[10] === '1', surdo: o[11] === '1' });
+    else if (o === 'cheia:1' || o === 'cheia:0') {
+      emTelaCheia = o === 'cheia:1';
+      if (janelaPrincipal && !janelaPrincipal.isDestroyed()) janelaPrincipal.setFullScreen(emTelaCheia);
+      posicionarView();
+    }
     else if (o.startsWith('rede:')) { const [, r, ms] = o.split(':'); avisarHome('call:rede', { religando: r === '1', ping: Number(ms) || 0 }); }
     else if (o.startsWith('gente:')) { try { genteNaCall = JSON.parse(o.slice(6)); } catch { genteNaCall = []; } avisarHome('call:gente', genteNaCall); mandarGente(); atualizarSobreposicao(); }
   });
@@ -1543,8 +1615,9 @@ function ligarSeletorDeTela(){
         try{
           if(!escolhida){ callback(); return; }
           // som de UM app: a página pergunta (call:somDoApp) assim que a captura nascer
-          somDoAppPedido = (escolha && typeof escolha === 'object' && escolha.som !== false && Number(escolha.somDe) > 0) ? Number(escolha.somDe) : 0;
-          somDoAppNome = somDoAppPedido ? ((apps.find((a) => a.pid === somDoAppPedido) || {}).exe || '?') : '';
+          // 'pc' = tudo menos Discord e o Bigas (mistura por app, pid -1); número = só aquele app
+          somDoAppPedido = (escolha && typeof escolha === 'object' && escolha.som !== false) ? (Number(escolha.somDe) > 0 ? Number(escolha.somDe) : -1) : 0;
+          somDoAppNome = somDoAppPedido === -1 ? 'tudo menos Discord/Bigas' : somDoAppPedido ? ((apps.find((a) => a.pid === somDoAppPedido) || {}).exe || '?') : '';
           callback({ video: escolhida, audio: 'loopback' });
           // qualidade/fps e som escolhidos NA TELA DE TRANSMITIR: viram o
           // padrão e são aplicados no site assim que a captura existir

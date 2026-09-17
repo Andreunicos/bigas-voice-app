@@ -79,7 +79,7 @@ function nomeDoApp(a){
 function pintarSom(){
   const sel = $('sel-som');
   sel.innerHTML = '';
-  const pc = document.createElement('option'); pc.value = 'pc'; pc.textContent = 'Tudo o que toca na saída padrão'; sel.appendChild(pc);
+  const pc = document.createElement('option'); pc.value = 'pc'; pc.textContent = 'Tudo o que toca no PC (menos Discord e as vozes da call)'; sel.appendChild(pc);
   apps.forEach((a) => { const o = document.createElement('option'); o.value = String(a.pid); o.textContent = 'Só ' + nomeDoApp(a); sel.appendChild(o); });
   sel.value = String(somDe);
   if (sel.value !== String(somDe)) { somDe = 'pc'; sel.value = 'pc'; }
@@ -92,7 +92,7 @@ function pintarResumo(){
   const a = apps.find((x) => String(x.pid) === String(somDe));
   $('btn-ir').disabled = !f;
   $('resumo').textContent = f
-    ? (f.ehTela ? f.nome : f.nome) + ' · ' + q.titulo + (som ? (a ? ' · som só do ' + a.exe.replace(/\.exe$/i, '') : ' · com som') : ' · sem som')
+    ? (f.ehTela ? f.nome : f.nome) + ' · ' + q.titulo + (som ? (a ? ' · som só do ' + a.exe.replace(/\.exe$/i, '') : ' · som do PC sem Discord') : ' · sem som')
     : 'Escolhe uma tela ou janela.';
 }
 
