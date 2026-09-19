@@ -41,8 +41,9 @@ const CORS = {
 };
 const API = 'https://api.cloudflare.com/client/v4';
 const SFU = 'https://rtc.live.cloudflare.com/v1/apps/';
-const PULSO_MIN = 5;          // minutos entre pulsos de quem assiste
+const PULSO_MIN = 5;          // pior caso, quando o pulso não traz os bytes (site antigo pulsava a cada 5 min)
 const MBPS_PADRAO = 12.2;     // se a faixa não disse a banda: o máximo que o app pede (nitidez extra) + som
+const TETO_POR_PULSO_GB = 0.6; // um pulso de 2 min a 20 Mbps dá 0,3 GB por faixa; acima disso é conta furada, não tráfego
 
 function json(obj, status) {
   return new Response(JSON.stringify(obj), { status: status || 200, headers: Object.assign({ 'Content-Type': 'application/json' }, CORS) });
@@ -163,17 +164,23 @@ export default {
     if (!uid) return json({ erro: 'sem conta' }, 401);
     if (!passaNoFreio(uid)) return json({ erro: 'devagar' }, 429);
 
-    // quem assiste avisa o que está puxando: soma 5 min × banda máxima de cada faixa
+    // quem assiste avisa o que está puxando. Se mandar os BYTES que recebeu
+    // desde o último pulso (o navegador conta), vale o número real + 5% de
+    // folga. Sem bytes (site antigo), vale o pior caso: 2 min × banda máxima.
     let m;
     if (req.method === 'POST' && url.pathname === '/pulso') {
       const corpo = await req.json().catch(() => ({}));
       const faixas = Array.isArray(corpo.faixas) ? corpo.faixas.slice(0, 20) : [];
       let gb = 0;
-      for (const f of faixas) {
-        const mbps = Number(await env.USO.get('mbps:' + f)) || MBPS_PADRAO;
-        gb += mbps * 1.15 * 60 * PULSO_MIN / 8 / 1000;   // Mbps → GB em 5 min, com 15% de folga
+      if (Number.isFinite(Number(corpo.bytes)) && corpo.bytes !== null && corpo.bytes !== undefined) {
+        gb = Math.min(TETO_POR_PULSO_GB * Math.max(1, faixas.length), Math.max(0, Number(corpo.bytes)) / 1e9 * 1.05);
+      } else {
+        for (const f of faixas) {
+          const mbps = Number(await env.USO.get('mbps:' + f)) || MBPS_PADRAO;
+          gb += mbps * 1.15 * 60 * PULSO_MIN / 8 / 1000;   // Mbps → GB em 5 min, com 15% de folga
+        }
       }
-      await somarUso(env, uid, gb);
+      if (gb > 0) await somarUso(env, uid, gb);
       const total = await gbDoMes(env);
       if (total >= teto) { await matarAppDeMidia(env, 'teto de ' + teto + ' GB'); return json({ ok: false, morto: true, gbMes: total }); }
       return json({ ok: true, gbMes: Math.round(total * 10) / 10, teto });
