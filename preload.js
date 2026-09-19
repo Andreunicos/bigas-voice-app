@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('bigasHome', {
   aoMudarJogo:      (funcao) => { ipcRenderer.on('jogo', (_ev, dados) => funcao(dados)); },
   aoPararSomDoApp:  (funcao) => { ipcRenderer.on('call:somDoApp', (_ev, dados) => funcao(dados)); },
   diagnostico:      (daCasa) => ipcRenderer.invoke('diagnostico:gerar', daCasa),
+  // o token da conta, pro porteiro do servidor de tela (o main pede quando o dele envelhece)
+  tokenSfu:         (t)      => ipcRenderer.send('sfu:token', String(t || '')),
+  aoPedirToken:     (funcao) => { ipcRenderer.on('sfu:token?', () => funcao()); },
   palcoMudou:    (rect) => ipcRenderer.send('palco:rect', rect),
 
   // avisos pro sistema
@@ -48,6 +51,8 @@ contextBridge.exposeInMainWorld('bigasApp', {
   // som de UM app: a página pergunta se a captura que acabou de nascer
   // deve usar o som do processo escolhido; o PCM chega por aoReceberSom
   somDoApp:     ()       => ipcRenderer.invoke('call:somDoApp'),
+  // o servidor de tela: {url do porteiro, token da conta} ou null (desligado / sem conta)
+  sfu:          ()       => ipcRenderer.invoke('call:sfu'),
   aoReceberSom: (funcao) => { ipcRenderer.on('som:pcm', (_ev, bytes) => funcao(bytes)); },
 });
 

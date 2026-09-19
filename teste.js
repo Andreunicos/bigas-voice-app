@@ -326,12 +326,15 @@ app.whenReady().then(async () => {
             const resto = [...f.slice(200, 600)].sort((a, b) => a - b); const mediana = resto[Math.floor(resto.length / 2)];
             s.getTracks().forEach(x => x.stop()); ctx.close();
             const n = (v) => Number.isFinite(v) ? Math.round(v) : -200;
-            return JSON.stringify({ label: t.label, deFora440: n(pico(440)), meu660: n(pico(660)), mediana: n(mediana) });
+            // o chão AO REDOR dos 660 Hz (600–720 Hz, sem os 3 bins do tom): um vazamento é um pico estreito
+            // acima dos vizinhos; ruído de outro programa (Roblox Studio, Steam) sobe a faixa inteira junto
+            const b660 = bin(660); const viz = []; for (let i = bin(600); i <= bin(720); i++) if (Math.abs(i - b660) > 2) viz.push(f[i]); viz.sort((a, b) => a - b);
+            return JSON.stringify({ label: t.label, deFora440: n(pico(440)), meu660: n(pico(660)), mediana: n(mediana), vizinhos660: n(viz[Math.floor(viz.length / 2)]) });
           }catch(e){ return JSON.stringify({ erro: e.name + ': ' + e.message }); }
         })()`, true), espera(20000).then(() => '{"erro":"demorou"}')]);
       let mj = null; try { mj = JSON.parse(r); } catch {}
       ok('MIX (tudo menos Discord/Bigas): o som de OUTRO programa chega', !!(mj && /Destination/i.test(mj.label || '') && mj.deFora440 > mj.mediana + 20), r);
-      ok('MIX: o som do PRÓPRIO Bigas Voice (as vozes da call) fica de fora', !!(mj && Number.isFinite(mj.meu660) && mj.meu660 < -120), r);   // -120 dB = nada (o de fora chega a -74)
+      ok('MIX: o som do PRÓPRIO Bigas Voice (as vozes da call) fica de fora', !!(mj && Number.isFinite(mj.meu660) && mj.meu660 < mj.vizinhos660 + 10), r);   // vazamento = pico estreito acima dos vizinhos (o de fora chega a -74)
       meu.destroy();
       try { deFora.kill(); } catch {}
       require('child_process').execFile('taskkill.exe', ['/f', '/im', 'powershell.exe', '/fi', 'WINDOWTITLE eq tom'], { windowsHide: true }, () => {}); // (o PlaySync acaba sozinho em 20 s)
@@ -730,6 +733,46 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
       // sozinho no canal a tela da call já aparece, com o botão de transmitir liberado
       const sozinho = janelaA.contentView.children[0] ? await esperarAte(() => janelaA.contentView.children[0].webContents.executeJavaScript(`(function(){ var b = document.getElementById('btn-tela'); return !document.getElementById('chamada').hidden && b && !b.disabled ? 'ok' : null; })()`).catch(() => null), 8000, 300) : null;
       ok('GRUPOS: sozinho no canal já dá pra transmitir a tela (botão liberado)', sozinho === 'ok');
+
+      // ===== TELA PELO SERVIDOR (Cloudflare Realtime + porteiro), de verdade =====
+      // A view pede o token à casa; sobe um vídeo sintético (canvas) pro servidor;
+      // e puxa ele de volta como se fosse um amigo — passando pelo servidor de verdade.
+      if (janelaA.contentView.children[0]) {
+        const vA = janelaA.contentView.children[0].webContents;
+        const ponte = await vA.executeJavaScript(`(async () => { try { const r = await window.bigasApp.sfu(); return JSON.stringify({ url: r && r.url, token: !!(r && r.token && r.token.length > 200) }); } catch (e) { return 'erro ' + e.message; } })()`).catch((e) => 'erro ' + e.message);
+        let pj = null; try { pj = JSON.parse(ponte); } catch {}
+        ok('SERVIDOR: a view recebe o endereço do porteiro e o token da conta', !!(pj && /bigas-porteiro/.test(pj.url || '') && pj.token), ponte);
+        const saude = await vA.executeJavaScript(`(async () => { try { const p = await window.bigasApp.sfu(); const r = await fetch(p.url + '/saude'); return await r.text(); } catch (e) { return 'erro ' + e.message; } })()`).catch((e) => 'erro ' + e.message);
+        ok('SERVIDOR: o porteiro responde /saude com ok e o teto do mês', /"ok":true/.test(saude) && /"teto":700/.test(saude) && !/"morto":true/.test(saude), saude);
+        const r = await Promise.race([vA.executeJavaScript(`(async () => {
+          try {
+            const c = document.createElement('canvas'); c.width = 640; c.height = 360; const g = c.getContext('2d');
+            let n = 0; const pintar = () => { g.fillStyle = 'hsl(' + (n * 7 % 360) + ',80%,50%)'; g.fillRect(0, 0, 640, 360); g.fillStyle = '#fff'; g.fillText(String(n++), 20, 40); };
+            pintar(); const relogio = setInterval(pintar, 33);
+            const stream = c.captureStream(30);
+            est.streamTela = stream;
+            const pub = await publicarTelaNoSfu(stream);
+            if (!pub) { clearInterval(relogio); est.streamTela = null; return JSON.stringify({ erro: 'não publicou (' + (SFU.falhouEm ? 'falhou' : 'indisponível') + ')' }); }
+            await new Promise(r => setTimeout(r, 2500));
+            const saiu = await quadrosSaindoPeloSfu();
+            // agora o outro lado: um "amigo" de mentira puxa a mesma tela do servidor
+            const par = novoPar('sfu-teste'); par.nome = 'Servidor'; par.conectado = true;
+            const puxou = await puxarTelaDoSfu(par, { sessao: pub.id, video: pub.video, audio: pub.audio });
+            let largura = 0; for (let i = 0; i < 40 && !largura; i++) { await new Promise(r => setTimeout(r, 250)); const v = document.getElementById('v-p-sfu-teste'); largura = v ? v.videoWidth : 0; }
+            const quadro = !!document.getElementById('q-p-sfu-teste');
+            const pulso = !!SFU.relogioPulso;
+            await soltarTelaDoSfu(par); tirarPar('sfu-teste'); await new Promise(r => setTimeout(r, 600));
+            const soltou = !SFU.puxa && !SFU.relogioPulso && !document.getElementById('q-p-sfu-teste');
+            clearInterval(relogio); est.streamTela = null; await pararTelaNoSfu();
+            stream.getTracks().forEach(t => t.stop());
+            return JSON.stringify({ sessao: pub.id.slice(0, 8), saiu, puxou, largura, quadro, pulso, soltou, pubFechou: !SFU.pub });
+          } catch (e) { return JSON.stringify({ erro: e.name + ': ' + e.message }); }
+        })()`, true), espera(45000).then(() => '{"erro":"demorou"}')]);
+        let sj = null; try { sj = JSON.parse(r); } catch {}
+        ok('SERVIDOR: a tela sobe pro servidor (sessão criada, quadros saindo)', !!(sj && sj.sessao && sj.saiu > 0), r);
+        ok('SERVIDOR: puxando a tela do servidor ela aparece no palco (vídeo com tamanho)', !!(sj && sj.puxou && sj.quadro && sj.largura > 0 && sj.pulso), r);
+        ok('SERVIDOR: soltar fecha a conexão, para o pulso e tira o quadro; parar de transmitir fecha a publicação', !!(sj && sj.soltou && sj.pubFechou), r);
+      }
       await jsA(`document.getElementById('btn-sair-call').click(); true`);
       const saiu = await esperarAte(() => jsB(`(function(){ var d = document.querySelector('#canais .dentro'); return !d || !/teste_bigas_a/.test(d.textContent) ? 'ok' : null; })()`), 15000, 400);
       ok('GRUPOS: A sai do canal e some da lista de B', saiu === 'ok');

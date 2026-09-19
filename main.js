@@ -54,6 +54,13 @@ let nickAtual = '';           // nick da conta logada, pra assinar dentro do sit
 let outroNick = '';           // nick de quem está do outro lado (só pra textos)
 let rectPalco = { x: 346, y: 0, width: 934, height: 820 }; // onde a call se encaixa (a casa avisa)
 let emTelaCheia = false;      // alguém pediu "tela cheia" num vídeo dentro da call
+/* O PORTEIRO do servidor de tela: um Worker que só deixa passar quem tem
+   conta do Bigas (token do Firebase) e conta o tráfego do mês. A casa
+   (home.js) manda o token pra cá sempre que o Firebase renova; a view
+   pede por call:sfu na hora de subir/puxar a tela. */
+const PORTEIRO = 'https://bigas-porteiro.andreluizvillanova123.workers.dev';
+let tokenSfu = { valor: '', quando: 0 };
+let esperandoToken = null;
 let saindoDeVerdade = false;  // "Sair" na bandeja / quitAndInstall: ignora "minimizar pra bandeja"
 
 /* ---------------------------------------------------------------------
@@ -79,6 +86,7 @@ let config = {
   prioridadeCaptura: false, // (CPU) processos do app um degrau acima do normal durante a call — medido: ruído
   prioridadeGpu: true,      // (GPU) fila da placa atende a captura antes do jogo (como o OBS faz) — vale a pena
   nitidezExtra: false,      // 1,5x de banda pra imagem (site v6.18) — pra quem tem upload sobrando
+  servidorTela: true,       // a tela sobe UMA vez pro servidor (Cloudflare Realtime) e cada amigo puxa de lá (site v6.24)
   ruidoForte: false,        // cancelamento de ruído forte (RNNoise) por cima do do Chromium — teclado mecânico, ventilador
   sobrepor: true,           // "quem está falando" por cima do jogo (janelinha transparente, só com o jogo na frente)
   cantoSobreposicao: 'esq-cima', // esq-cima | dir-cima | esq-baixo | dir-baixo
@@ -606,6 +614,7 @@ function scriptPreferencias(){
     codec: config.codec, micRotulo: config.micRotulo, saidaRotulo: config.saidaRotulo,
     nitidezExtra: !!config.nitidezExtra, ruidoForte: !!config.ruidoForte,
     portao: Math.max(5, Math.min(50, Number(config.portao) || 12)), portaoCorta: config.portaoCorta !== false,
+    servidorTela: config.servidorTela !== false,
   });
   return `
     (function(){
@@ -616,6 +625,7 @@ function scriptPreferencias(){
           if (pref.tecla) { cfg.tecla = pref.tecla; cfg.nomeTecla = pref.nomeTecla || pref.tecla; }
           cfg.limpar = pref.limpar;
           cfg.portao = pref.portao; cfg.portaoCorta = pref.portaoCorta;
+          cfg.servidorTela = pref.servidorTela;
           var ip = document.getElementById('in-portao'); if (ip) { ip.value = cfg.portao; ip.dispatchEvent(new Event('input', { bubbles: true })); }
           var ic = document.getElementById('in-portao-corta'); if (ic) ic.checked = cfg.portaoCorta;
           if (typeof aplicarMudo === 'function') try { aplicarMudo(); } catch(e){}
@@ -1421,6 +1431,23 @@ function ligarChamadas(){
   // a página pergunta, logo depois de a captura de tela nascer, se o som
   // vai ser de UM app (escolhido na tela de Transmitir): se sim, liga o
   // ajudante e devolve o pid; a página troca a faixa de áudio pela nossa
+  ipcMain.on('sfu:token', (ev, t) => {
+    if (!janelaPrincipal || ev.sender !== janelaPrincipal.webContents) return;
+    tokenSfu = { valor: String(t || ''), quando: Date.now() };
+    if (esperandoToken) { esperandoToken(); esperandoToken = null; }
+  });
+  ipcMain.handle('call:sfu', async (ev) => {
+    if (!viewCall || ev.sender !== viewCall.webContents) return null;
+    if (config.servidorTela === false) return null;
+    // token do Firebase dura 1 h; com mais de 45 min pede um novo pra casa
+    if (!tokenSfu.valor || Date.now() - tokenSfu.quando > 45 * 60 * 1000) {
+      avisarHome('sfu:token?');
+      await new Promise((r) => { esperandoToken = r; setTimeout(r, 4000); });
+      esperandoToken = null;
+    }
+    if (!tokenSfu.valor) return null;
+    return { url: PORTEIRO, token: tokenSfu.valor };
+  });
   ipcMain.handle('call:somDoApp', (ev) => {
     if (!viewCall || ev.sender !== viewCall.webContents) return 0;
     const pid = somDoAppPedido; somDoAppPedido = 0;
@@ -1504,13 +1531,13 @@ function ligarChamadas(){
   ipcMain.handle('config:mudar', (ev, mudancas) => {
     const permitidas = ['bandeja', 'iniciarComWindows', 'atalhoMic', 'atalhoSurdo',
       'micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'nomeTeclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'somDaTela', 'captura', 'prioridadeCaptura', 'prioridadeGpu', 'nitidezExtra',
-      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo', 'portao', 'portaoCorta', 'sons'];
+      'ruidoForte', 'sobrepor', 'cantoSobreposicao', 'mostrarJogo', 'portao', 'portaoCorta', 'sons', 'servidorTela'];
     for (const k of permitidas) if (mudancas && k in mudancas) config[k] = mudancas[k];
     guardarConfig();
     aplicarConfig();
     if (mudancas && ('fala' in mudancas || 'teclaPtt' in mudancas)) ligarPtt();
     // mudou algo que vale dentro da call: aplica agora (a casa também pede, mas o script é idempotente)
-    if (viewCall && mudancas && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'nitidezExtra', 'ruidoForte', 'prioridadeGpu', 'portao', 'portaoCorta'].some((k) => k in mudancas)) reaplicarNaCall();
+    if (viewCall && mudancas && ['micRotulo', 'saidaRotulo', 'fala', 'teclaPtt', 'limpar', 'volume', 'qualidade', 'codec', 'nitidezExtra', 'ruidoForte', 'prioridadeGpu', 'portao', 'portaoCorta', 'servidorTela'].some((k) => k in mudancas)) reaplicarNaCall();
     if (mudancas && ('sobrepor' in mudancas || 'cantoSobreposicao' in mudancas)) { posicionarSobreposicao(); atualizarSobreposicao(); }
     if (mudancas && 'mostrarJogo' in mudancas) olharJogo().catch(() => {});
     return config;

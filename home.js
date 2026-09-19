@@ -1,7 +1,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
 import {
   getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  onAuthStateChanged, signOut, sendPasswordResetEmail,
+  onAuthStateChanged, onIdTokenChanged, signOut, sendPasswordResetEmail,
   reauthenticateWithCredential, EmailAuthProvider, verifyBeforeUpdateEmail,
 } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import {
@@ -345,6 +345,15 @@ function traduzirErro(e){
 /* =====================================================================
  * QUANDO LOGA / DESLOGA
  * =================================================================== */
+/* O token da conta vai pro processo principal sempre que o Firebase o
+   renova (a cada ~1 h): é ele que abre a porta do servidor de tela. */
+function mandarTokenSfu(forcar){
+  const u = auth.currentUser; if (!u || !ponte.tokenSfu) return;
+  u.getIdToken(!!forcar).then((t) => ponte.tokenSfu(t)).catch(() => {});
+}
+onIdTokenChanged(auth, (u) => { if (u) mandarTokenSfu(false); });
+if (ponte.aoPedirToken) ponte.aoPedirToken(() => mandarTokenSfu(true));
+
 onAuthStateChanged(auth, async (usuario) => {
   desligarTudo();
 
@@ -1833,6 +1842,7 @@ function pintarAjustes(){
   $('chave-som-tela').classList.toggle('on', config.somDaTela !== false);
   $('chave-gpu').classList.toggle('on', config.prioridadeGpu !== false);
   $('chave-nitidez').classList.toggle('on', !!config.nitidezExtra);
+  $('chave-servidor').classList.toggle('on', config.servidorTela !== false);
   $('chave-ruido').classList.toggle('on', !!config.ruidoForte);
   const portao = Math.max(5, Math.min(50, Number(config.portao) || 12));
   $('portao-app').value = portao; $('portao-app-txt').textContent = String(portao); $('marca-portao').style.left = portao + '%';
@@ -1957,6 +1967,7 @@ $('chave-limpar').onclick = () => mudarConfig({ limpar: config.limpar === false 
 $('chave-som-tela').onclick = () => mudarConfig({ somDaTela: config.somDaTela === false });
 $('chave-gpu').onclick = () => mudarConfig({ prioridadeGpu: config.prioridadeGpu === false });
 $('chave-nitidez').onclick = () => mudarConfig({ nitidezExtra: !config.nitidezExtra });
+$('chave-servidor').onclick = () => mudarConfig({ servidorTela: config.servidorTela === false });
 $('chave-ruido').onclick = () => mudarConfig({ ruidoForte: !config.ruidoForte });
 $('chave-portao').onclick = () => mudarConfig({ portaoCorta: config.portaoCorta === false });
 $('portao-app').oninput = () => { const v = Number($('portao-app').value); $('portao-app-txt').textContent = String(v); $('marca-portao').style.left = v + '%'; config.portao = v; };
