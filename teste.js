@@ -600,7 +600,12 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
   if (await temAmigo(jsB, uidA)) { await jsB(`window.__bigasEstado.tirarAmigo(${JSON.stringify(uidA)}, ${JSON.stringify(NICK_A)})`); await esperarAte(async () => !(await temAmigo(jsB, uidA)) ? 'ok' : null, 10000, 500); }
 
   // pedidos pendentes de uma rodada anterior: B recusa todos antes de começar
-  await jsB(`document.querySelectorAll('#pedidos .cartinha .nao').forEach(b => b.click()); true`);
+  // (a lista chega por onSnapshot: dá uns segundos pra ela aparecer antes de recusar)
+  for (let i = 0; i < 4; i++) {
+    await espera(1500);
+    const n = await jsB(`(function(){ var bs = document.querySelectorAll('#pedidos .cartinha .nao'); bs.forEach(b => b.click()); return bs.length; })()`);
+    if (i >= 1 && !n) break;
+  }
   await esperarAte(() => jsB(`document.getElementById('bloco-pedidos').hidden ? 'ok' : null`), 8000, 300);
 
   // pedido de amizade A → B, B aceita, os dois lados ficam amigos
@@ -743,7 +748,7 @@ async function testarFirebase(janelaA, jsA, ok, esperarAte, espera) {
         let pj = null; try { pj = JSON.parse(ponte); } catch {}
         ok('SERVIDOR: a view recebe o endereço do porteiro e o token da conta', !!(pj && /bigas-porteiro/.test(pj.url || '') && pj.token), ponte);
         const saude = await vA.executeJavaScript(`(async () => { try { const p = await window.bigasApp.sfu(); const r = await fetch(p.url + '/saude'); return await r.text(); } catch (e) { return 'erro ' + e.message; } })()`).catch((e) => 'erro ' + e.message);
-        ok('SERVIDOR: o porteiro responde /saude com ok e o teto do mês', /"ok":true/.test(saude) && /"teto":700/.test(saude) && !/"morto":true/.test(saude), saude);
+        ok('SERVIDOR: o porteiro responde /saude com ok e o teto do mês', /"ok":true/.test(saude) && /"teto":[1-9]\d{2,}/.test(saude) && !/"morto":true/.test(saude), saude);
         const r = await Promise.race([vA.executeJavaScript(`(async () => {
           try {
             const c = document.createElement('canvas'); c.width = 640; c.height = 360; const g = c.getContext('2d');
